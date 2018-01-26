@@ -1,0 +1,3 @@
+-DDEBUG
+-I./include
+-I/usr/include/c++/5.4.0/

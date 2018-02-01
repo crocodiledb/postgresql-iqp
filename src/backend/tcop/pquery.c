@@ -504,6 +504,7 @@ PortalStart(Portal portal, ParamListInfo params,
 											portal->queryEnv,
 											0);
 
+
 				/*
 				 * If it's a scrollable cursor, executor needs to support
 				 * REWIND and backwards scan, as well as whatever the caller

@@ -14,6 +14,17 @@
 
 #include "nodes/execnodes.h"
 
+typedef enum DecisionMethod
+{
+    DM_DP,
+    DM_TOPDOWN,
+    DM_BOTTOMUP,
+    DM_MEMSMALLFIRST,
+    DM_MEMBIGFIRST
+}DecisionMethod; 
+
+typedef void *(*ExecDPNode) (struct EState *estate, int i, int j);
+
 /*
  * Helpful Macros
  */
@@ -60,7 +71,21 @@ typedef struct IncInfo {
     struct IncInfo *lefttree; 
     struct IncInfo *righttree; 
 
-    int trigger_computation; 
+    int trigger_computation;
+    int id;  
+
+    /*
+     * memory_cost is initialized when the batch processing is done
+     * compute_cost is initialized as the estimated cost in plan tree 
+     */
+    ExecDPNode execDPNode; 
+    int memory_cost; 
+    int compute_cost;
+    int prepare_cost;  
+
+    /* Does left or right substrees have deltas */
+    bool    leftUpdate; 
+    bool    rightUpdate; 
 
     /* Pull actions  */
     PullAction leftAction; 
@@ -70,10 +95,6 @@ typedef struct IncInfo {
     /* IncState */
     IncState leftIncState; 
     IncState rightIncState; 
-
-    /* Does left or right substrees have deltas */
-    bool    leftUpdate; 
-    bool    rightUpdate; 
 
 } IncInfo; 
  

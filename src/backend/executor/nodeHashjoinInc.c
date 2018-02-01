@@ -548,7 +548,6 @@ ExecResetHashJoinState(HashJoinState * node)
 		node->hj_JoinState = HJ_NEED_NEW_OUTER;
     }
 
-
     PlanState *innerPlan; 
     PlanState *outerPlan; 
            
@@ -582,6 +581,19 @@ ExecInitHashJoinDelta(HashJoinState * node)
     ExecInitDelta(outerPlan); 
 
     return; 
+}
+
+/* ----------------------------------------------------------------
+ *		ExecHashJoinMemoryCost
+ *
+ *		Get hash join memory cost
+ * ----------------------------------------------------------------
+ */
+
+int 
+ExecHashJoinMemoryCost(HashJoinState * node)
+{
+    return (int)((node->hj_HashTable->spaceUsed + 1023) / 1024); 
 }
 
 

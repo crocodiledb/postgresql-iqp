@@ -17,6 +17,9 @@
 #include "executor/incinfo.h"
 
 extern bool enable_incremental;
+extern int  memory_budget;
+extern DecisionMethod decision_method; 
+
 
 /*
  * MarkTupComplete -- mark a tuple complete or not
@@ -80,18 +83,19 @@ extern void ExecInitAggInc(AggState *aggstate);
  * prototypes from functions in executor/incmeta.c
  */
 
-extern IncInfo * ExecInitIncInfo(PlanState *ps); 
+extern void ExecInitIncInfo(EState *estate, PlanState *ps); 
 
-extern void ExecDP(IncInfo *incInfo); 
+extern void ExecMakeDecision(EState *estate, IncInfo *incInfo); 
 
 extern void ExecGenPullAction(IncInfo *incInfo); 
-
-extern void ExecMarkDelta(IncInfo *incInfo); 
     
 extern void ExecResetState(PlanState *ps);
 
 extern void ExecInitDelta(PlanState *ps); 
 
+extern void ExecCleanIncInfo(EState *estate); 
+
+extern double GetTimeDiff(struct timeval x , struct timeval y); 
 
 /*
  * prototypes from functions for ExecResetState 
@@ -125,6 +129,16 @@ extern void ExecInitAggDelta(AggState * node);
 
 extern void ExecInitSortDelta(SortState * node); 
 
+/*
+ * prototypes for getting memory cost
+ */
+extern int ExecHashJoinMemoryCost(HashJoinState * node); 
+
+//extern void ExecInitMergeJoinDelta(MergeJoinState * node); 
+
+extern int ExecAggMemoryCost(AggState * node); 
+
+extern int ExecSortMemoryCost(SortState * node); 
  
 #endif
 

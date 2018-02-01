@@ -1925,6 +1925,17 @@ static struct config_int ConfigureNamesInt[] =
 		NULL, NULL, show_log_file_mode
 	},
 
+    /* totem: add memory_budget option */
+	{
+		{"memory_budget", PGC_USERSET, RESOURCES_MEM,
+			gettext_noop("Sets the memory budget to cache intermediate states"),
+			GUC_UNIT_KB
+		},
+		&memory_budget,
+		4096, 0, MAX_KILOBYTES,
+		NULL, NULL, NULL
+	},
+
 	{
 		{"work_mem", PGC_USERSET, RESOURCES_MEM,
 			gettext_noop("Sets the maximum memory to be used for query workspaces."),
@@ -3673,9 +3684,27 @@ static struct config_string ConfigureNamesString[] =
 	}
 };
 
+static const struct config_enum_entry decision_method_options[] = {
+	{"dp", DM_DP, false},
+	{"topdown", DM_TOPDOWN, false},
+	{"bottomup", DM_BOTTOMUP, false},
+	{"memsmallfirst", DM_MEMSMALLFIRST, false},
+	{"membigfirst", DM_MEMBIGFIRST, false},
+	{NULL, 0, false}
+};
 
 static struct config_enum ConfigureNamesEnum[] =
 {
+    /* totem: add different ways of deciding which states to be discarded */
+    {
+        {"decision_method", PGC_USERSET, QUERY_TUNING_METHOD, 
+            gettext_noop("Different ways of deciding which states to be discarded. "),
+            NULL
+        },
+        &decision_method,  
+        DM_DP, decision_method_options,
+        NULL, NULL, NULL
+    },
 	{
 		{"backslash_quote", PGC_USERSET, COMPAT_OPTIONS_PREVIOUS,
 			gettext_noop("Sets whether \"\\'\" is allowed in string literals."),

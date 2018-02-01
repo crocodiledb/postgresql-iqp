@@ -3152,6 +3152,17 @@ tuplesort_reverttoheap(Tuplesortstate *state)
 	MemoryContextSwitchTo(oldcontext);
 }
 
+/* 
+ * tuplesort_getusedmem
+ *      totem: get the amount of used memory 
+ *
+ * */
+int 
+tuplesort_getusedmem(Tuplesortstate *state)
+{
+    return ((state->allowedMem - state->availMem + 1023) / 1024);
+}
+
 /*
  * tuplesort_rescan		- rewind and replay the scan
  */

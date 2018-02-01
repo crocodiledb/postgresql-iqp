@@ -18,11 +18,6 @@
 #include "nodes/execnodes.h"
 #include "tcop/dest.h"
 
-/*
- * totem: add IncInfo
- */
-#include "executor/incinfo.h"
-
 /* ----------------
  *		query descriptor:
  *
@@ -51,7 +46,6 @@ typedef struct QueryDesc
 	TupleDesc	tupDesc;		/* descriptor for result tuples */
 	EState	   *estate;			/* executor's query-wide state */
 	PlanState  *planstate;		/* tree of per-plan-node state */
-    IncInfo    *incInfo;        /* totem: tree of info for incremental processing */
 
 	/* This field is set by ExecutorRun */
 	bool		already_executed;	/* true if previously executed */

@@ -657,4 +657,5 @@
 
 # Add settings for extensions here
 #
-#enable_incremental = off 
+#enable_incremental = off
+#memory_budget = 100 

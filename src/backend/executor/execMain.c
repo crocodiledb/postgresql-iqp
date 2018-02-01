@@ -275,8 +275,9 @@ standard_ExecutorStart(QueryDesc *queryDesc, int eflags)
     /*
      * totem: initialize IncInfo 
      */
-    if (estate->es_incremental)
-        queryDesc->incInfo = ExecInitIncInfo(queryDesc->planstate); 
+    if (estate->es_incremental) {
+        ExecInitIncInfo(estate, queryDesc->planstate); 
+    }
 
 	MemoryContextSwitchTo(oldcontext);
 }
@@ -330,7 +331,7 @@ standard_ExecutorRun(QueryDesc *queryDesc,
 	DestReceiver *dest;
 	bool		sendTuples;
 	MemoryContext oldcontext;
-
+        
 	/* sanity checks */
 	Assert(queryDesc != NULL);
 
@@ -454,6 +455,9 @@ standard_ExecutorFinish(QueryDesc *queryDesc)
 
 	if (queryDesc->totaltime)
 		InstrStopNode(queryDesc->totaltime, 0);
+
+    if (estate->es_incremental)
+        ExecCleanIncInfo(estate); 
 
 	MemoryContextSwitchTo(oldcontext);
 
@@ -1699,6 +1703,10 @@ ExecutePlan(EState *estate,
 {
 	TupleTableSlot *slot;
 	uint64		current_tuple_count;
+    
+    /* totem: add timeval to record time diff */
+    struct timeval start, end;  
+    gettimeofday(&start , NULL);
 
 	/*
 	 * initialize local variables
@@ -1733,7 +1741,7 @@ ExecutePlan(EState *estate,
 
 		/*
 		 * Execute the plan and obtain a tuple
-		 */
+		 */     
 		slot = ExecProcNode(planstate);
 
 		/*
@@ -1748,6 +1756,11 @@ ExecutePlan(EState *estate,
         {
             if (TupIsComplete(slot)) 
             {
+                if (estate->es_incremental)
+                {
+                    gettimeofday(&end , NULL);
+                    estate->repairTime = GetTimeDiff(start, end) - estate->batchTime; 
+                }
                 /* Allow nodes to release or shut down resources. */
 			    (void) ExecShutdownNode(planstate);
 			    break;
@@ -1756,21 +1769,25 @@ ExecutePlan(EState *estate,
             {
                 if (estate->es_incremental) 
                 {
-                    /* For testing, we should mark the left most table as the one with delta */
-                    ExecMarkDelta(planstate->ps_IncInfo); 
+
+                    gettimeofday(&end , NULL);
+                    estate->batchTime = GetTimeDiff(start, end); 
 
                     /* Run the DP algorithm to decide dropping or keeping states */
-                    ExecDP(planstate->ps_IncInfo); 
-
+                    ExecMakeDecision(estate, planstate->ps_IncInfo); 
+ 
                     /* Let's perform the drop/keep actions */
                     ExecResetState(planstate); 
-
+ 
                     /* According to the delta information, we generate pull actions */
                     ExecGenPullAction(planstate->ps_IncInfo);
 
                     /* Let's initialize meta data for delta processing */
-                    ExecInitDelta(planstate); 
-
+                    ExecInitDelta(planstate);  
+                     
+                    gettimeofday(&end , NULL);
+                    estate->decisionTime = GetTimeDiff(start, end) - estate->batchTime;                     
+                   
                 }
                 continue;
             }

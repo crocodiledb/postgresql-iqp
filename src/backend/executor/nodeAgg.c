@@ -2628,6 +2628,7 @@ agg_retrieve_hash_table(AggState *aggstate)
 				return NULL;
 			}
 		}
+        
 
 		/*
 		 * Clear the per-output-tuple context for each group

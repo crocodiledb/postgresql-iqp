@@ -124,4 +124,6 @@ extern void tuplesort_rescan(Tuplesortstate *state);
 extern void tuplesort_markpos(Tuplesortstate *state);
 extern void tuplesort_restorepos(Tuplesortstate *state);
 
+extern int tuplesort_getusedmem(Tuplesortstate *state); /* totem: get the amount of used memory */
+
 #endif							/* TUPLESORT_H */

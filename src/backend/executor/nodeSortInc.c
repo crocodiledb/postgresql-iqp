@@ -274,3 +274,19 @@ ExecInitSortDelta(SortState * node)
     outerPlan = outerPlanState(node);
     ExecInitDelta(outerPlan); 
 }
+
+int
+ExecSortMemoryCost(SortState * node)
+{
+    int memory_cost = 0; 
+    Tuplesortstate * temp = (Tuplesortstate *) (node->tuplesortstate); 
+    if (temp != NULL)
+        memory_cost += tuplesort_getusedmem(temp);
+
+    temp = (Tuplesortstate *) node->stashedstate; 
+    if (temp != NULL)
+        memory_cost += tuplesort_getusedmem(temp);
+
+    return memory_cost; 
+}
+

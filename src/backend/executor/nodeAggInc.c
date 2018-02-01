@@ -1907,6 +1907,11 @@ ExecAgg(PlanState *pstate)
 		switch (node->phase->aggstrategy)
 		{
 			case AGG_HASHED:
+                if (!node->table_created) 
+                {
+                    node->table_created = true;
+                    build_hash_table(node); 
+                }
 				if (!node->table_filled)
 					agg_fill_hash_table(node);
 				/* FALLTHROUGH */
@@ -2397,6 +2402,10 @@ agg_retrieve_hash_table(AggState *aggstate)
 				return NULL;
 			}
 		}
+        else
+        {
+            aggstate->distGroups++; 
+        }
 
 		/*
 		 * Clear the per-output-tuple context for each group
@@ -2501,12 +2510,14 @@ void
 ExecInitAggInc(AggState *aggstate)
 {
     aggstate->isComplete = false;
+    aggstate->distGroups = 0;
+    aggstate->table_created = true; 
 }
 
 void 
 ExecResetAggState(AggState * node)
-{
-	node->agg_done = false;
+{ 
+    node->agg_done = false;
     node->table_filled = false;
 
     IncInfo *incInfo = node->ss.ps.ps_IncInfo;
@@ -2514,8 +2525,10 @@ ExecResetAggState(AggState * node)
     {		
         ReScanExprContext(node->hashcontext);
 		/* Rebuild an empty hash table */
-		build_hash_table(node);
+		//build_hash_table(node);
+        node->table_created = false; 
 		/* iterator will be reset when the table is filled */
+        node->distGroups = 0; 
     } 
     else if (incInfo->leftIncState == STATE_KEEPDISK)
     {
@@ -2536,4 +2549,23 @@ ExecInitAggDelta(AggState * node)
     PlanState *outerPlan;
     outerPlan = outerPlanState(node);
     ExecInitDelta(outerPlan); 
+}
+
+int 
+ExecAggMemoryCost(AggState * node)
+{
+    Plan *plan = node->ss.ps.plan; 
+	Size hashentrysize;
+
+	/* Estimate per-hash-entry space at tuple width... */
+	hashentrysize = MAXALIGN(plan->plan_width) +
+        MAXALIGN(SizeofMinimalTupleHeader);
+
+	/* plus space for pass-by-ref transition values... */
+	//hashentrysize += agg_costs->transitionSpace;
+
+	/* plus the per-hash-entry overhead */
+	hashentrysize += hash_agg_entry_size(node->numaggs);
+
+    return (int)((hashentrysize*node->distGroups + 1023) / 1024);  
 }

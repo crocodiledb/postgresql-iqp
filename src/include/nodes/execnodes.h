@@ -517,7 +517,28 @@ typedef struct EState
 
 	bool		es_use_parallel_mode; /* can we use parallel workers? */
 
-    bool        es_incremental /* totem: execute this query incrementally? */
+    bool        es_incremental; /* totem: execute this query incrementally? */
+    IncInfo   **es_incInfo;     /* totem: array of IncInfo * */
+    int         es_numIncInfo; 
+
+    int       **es_deltaCost;       /* totem: cost for computing delta */
+    IncState  **es_deltaIncState;   /* totem: two dimension array of inc states */
+    int       **es_deltaMemLeft;    /* totem: memory allocated to the left subtree */
+    PullAction **es_deltaLeftPull; 
+    PullAction **es_deltaRightPull; 
+
+    int       **es_bdCost;          /* totem: cost of computing both delta and batch */
+    IncState  **es_bdIncState;
+    int       **es_bdMemLeft;
+    PullAction **es_bdLeftPull; 
+    PullAction **es_bdRightPull; 
+
+    FILE      *es_statFile;
+    double    decisionTime; 
+    double    repairTime;
+    double    batchTime;
+    IncState  *es_incState;
+    int        es_incMemory;  
 } EState;
 
 
@@ -1838,6 +1859,8 @@ typedef struct AggState
 	ProjectionInfo      *combinedproj;	/* projection machinery */
 	AggStatePerAgg      curperagg;	    /* currently active aggregate, if any */
     bool                isComplete;     /* totem: whether query is complete or not */
+    int                 distGroups;     /* totem: number of groups for hashAgg*/
+    bool                table_created   /* totem: is hash table created or not */
 } AggState;
 
 /* ----------------

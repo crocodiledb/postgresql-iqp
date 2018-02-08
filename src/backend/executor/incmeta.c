@@ -11,8 +11,10 @@
 
 #include "postgres.h"
 #include "nodes/execnodes.h"
+#include "executor/execdesc.h"
 
 #include "executor/incinfo.h"
+#include "executor/incTupleQueue.h"
 
 #define DELTA_COST 0
 
@@ -20,12 +22,11 @@ bool enable_incremental;
 int  memory_budget;     /* kB units*/
 DecisionMethod decision_method; 
 
-
-//static int ExecAssignIncInfo(IncInfo **incInfo_array, IncInfo *cur, int id);
+static void ExecInitIncInfo(EState *estate, QueryDesc *queryDesc); 
 static void ExecAssignIncInfo (IncInfo **incInfo_array, int numIncInfo, IncInfo *root);
+static IncInfo * ExecInitIncInfoHelper(PlanState *ps, IncInfo *parent, int *count, int *leafCount); 
 
-static IncInfo * ExecInitIncInfoHelper(PlanState *ps, IncInfo *parent, int *count); 
-
+static void ExecMakeDecision (EState *estate, IncInfo *incInfo); 
 static void ExecMarkDelta(IncInfo *incInfo); 
 static void ExecCollectCostInfo(IncInfo *incInfo); 
 static void RunDPSolution(EState *estate); 
@@ -38,8 +39,12 @@ static void HashJoinDPNoUpdate (EState *estate, int i, int j);
 static void ExecDPAssignState (EState *estate, int i, int j, PullAction parentAction); 
 static void PrintStateDecision(EState *estate); 
 
+static void ExecResetState(PlanState *ps); 
+static void ExecGenPullAction(IncInfo *incInfo); 
 static void ExecGenPullActionHelper(IncInfo *incInfo, PullAction parentAction); 
 static bool ExecIncHasUpdate(IncInfo *incInfo); 
+
+static void ExecInitDelta(PlanState *ps); 
 
 /*
  * prototypes for Greedy Algorithms 
@@ -53,6 +58,75 @@ static int MemComparator(const void * a, const void *b)
     IncInfo *b_incInfo = *(IncInfo **)b; 
 
     return a_incInfo->memory_cost - b_incInfo->memory_cost; 
+}
+
+/* 
+ * Interfaces for incremental query processing 
+ */
+void 
+ExecIncStart(EState *estate, QueryDesc *queryDesc)
+{
+    if (queryDesc->operation == CMD_SELECT)
+    {
+        estate->es_isSelect = true; 
+        ExecInitIncInfo(estate, queryDesc);
+
+        /* Collect TupleQueue Readers */
+        IncInfo **incInfoArray = estate->es_incInfo; 
+        estate->tq_reader = palloc(sizeof(IncTupQueueReader *) * estate->es_numLeaf); 
+        for (int i  = 0, j = 0; i < estate->es_numIncInfo; i++) 
+        {
+            PlanState *ps = incInfoArray[i]->ps; 
+            if (ps->lefttree == NULL && ps->righttree == NULL)
+            {
+                ScanState *ss = (ScanState *)ps; 
+                estate->tq_reader[j] = ss->tq_reader; 
+                j++;
+            }
+        }
+    }
+    else /* Modification Command; Collect Writer */
+    {
+        estate->es_isSelect = false;
+        PlanState *ps = queryDesc->planstate; 
+        if (ps->type == T_ModifyTableState)
+        {
+            ModifyTableState *mt = (ModifyTableState *)ps; 
+            estate->tq_writer = mt->tq_writer; 
+        }
+        else
+        {
+            elog(ERROR, "We assume the root node is Modify Table"); 
+        }
+    }
+}
+
+void 
+ExecIncRun(EState *estate, PlanState *planstate)
+{
+    if (estate->es_isSelect) 
+    {
+        /* Run the DP algorithm to decide dropping or keeping states */
+        ExecMakeDecision(estate, planstate->ps_IncInfo); 
+ 
+        /* Let's perform the drop/keep actions */
+        ExecResetState(planstate); 
+ 
+        /* According to the delta information, we generate pull actions */
+        ExecGenPullAction(planstate->ps_IncInfo);
+
+        /* Let's initialize meta data for delta processing */
+        ExecInitDelta(planstate);  
+    }
+}
+
+void 
+ExecIncFinish(EState *estate, PlanState *planstate)
+{
+    if (estate->es_isSelect)
+    {
+        ExecCleanIncInfo(estate); 
+    }
 }
 
 /*
@@ -73,12 +147,16 @@ static int MemComparator(const void * a, const void *b)
  *
  */
 
-void ExecInitIncInfo(EState *estate, PlanState *ps) 
+static void 
+ExecInitIncInfo(EState *estate, QueryDesc *queryDesc) 
 {
     int count = 0; 
+    int leafCount = 0; 
     int incMemory = 0; 
+    PlanState *ps = queryDesc->ps; 
 
-    ExecInitIncInfoHelper(ps, NULL, &count);
+    ExecInitIncInfoHelper(ps, NULL, &count, &leafCount);
+    estate->es_numLeaf = leafCount; 
 
     estate->es_incInfo = (IncInfo **) palloc(sizeof(IncInfo *) * count); 
     ExecAssignIncInfo(estate->es_incInfo, count, ps->ps_IncInfo); 
@@ -128,15 +206,6 @@ void ExecInitIncInfo(EState *estate, PlanState *ps)
     estate->decisionTime = 0;
     estate->repairTime = 0;
     estate->es_incState = (IncState *) palloc(sizeof(IncState) * count);
-
-    /* Mark trigger computation */
-    
-    IncInfo *left = ps->ps_IncInfo;
-
-    while (left->lefttree != NULL)
-        left = left->lefttree; 
-    left->trigger_computation = 5940000; 
-
 }
 
 static void 
@@ -172,24 +241,8 @@ ExecAssignIncInfo (IncInfo **incInfo_array, int numIncInfo, IncInfo *root)
     pfree(incInfo_queue); 
 }
 
-/*
-static int 
-ExecAssignIncInfo(IncInfo **incInfo_array, IncInfo *cur, int id)
-{
-    if (cur->lefttree != NULL)
-        id = ExecAssignIncInfo(incInfo_array, cur->lefttree, id); 
-    if (cur->righttree != NULL)
-        id = ExecAssignIncInfo(incInfo_array, cur->righttree, id); 
-        
-    incInfo_array[id] = cur; 
-    cur->id = id; 
-
-    return id+1; 
-}
-*/
-
 static IncInfo * 
-ExecInitIncInfoHelper(PlanState *ps, IncInfo *parent, int *count) 
+ExecInitIncInfoHelper(PlanState *ps, IncInfo *parent, int *count, int *leafCount) 
 {
     Assert(ps != NULL); 
 
@@ -217,27 +270,28 @@ ExecInitIncInfoHelper(PlanState *ps, IncInfo *parent, int *count)
         case T_HashJoinState:
             innerPlan = outerPlanState(innerPlanState(ps)); /* Skip Hash node */
             outerPlan = outerPlanState(ps); 
-            innerIncInfo(incInfo) = ExecInitIncInfoHelper(innerPlan, incInfo, count); 
-            outerIncInfo(incInfo) = ExecInitIncInfoHelper(outerPlan, incInfo, count); 
+            innerIncInfo(incInfo) = ExecInitIncInfoHelper(innerPlan, incInfo, count, leafCount); 
+            outerIncInfo(incInfo) = ExecInitIncInfoHelper(outerPlan, incInfo, count, leafCount); 
             break;
 
         case T_MergeJoinState:
             innerPlan = outerPlanState(outerPlanState(innerPlanState(ps))); /* Skip Material and Sort nodes */
             outerPlan = outerPlanState(outerPlanState(ps));                  /* Skip Sort node */ 
-            innerIncInfo(incInfo) = ExecInitIncInfoHelper(innerPlan, incInfo, count); 
-            outerIncInfo(incInfo) = ExecInitIncInfoHelper(outerPlan, incInfo, count); 
+            innerIncInfo(incInfo) = ExecInitIncInfoHelper(innerPlan, incInfo, count, leafCount); 
+            outerIncInfo(incInfo) = ExecInitIncInfoHelper(outerPlan, incInfo, count, leafCount); 
             break; 
 
         case T_SeqScanState:
         case T_IndexScanState:
             innerIncInfo(incInfo) = NULL;
             outerIncInfo(incInfo) = NULL;
+            (*leafCount)++; 
             break; 
 
         case T_AggState:
         case T_SortState:
             outerPlan = outerPlanState(ps); 
-            outerIncInfo(incInfo) = ExecInitIncInfoHelper(outerPlan, incInfo, count);
+            outerIncInfo(incInfo) = ExecInitIncInfoHelper(outerPlan, incInfo, count, leafCount);
             innerIncInfo(incInfo) = NULL;
             break; 
 
@@ -260,7 +314,7 @@ ExecInitIncInfoHelper(PlanState *ps, IncInfo *parent, int *count)
  *      2d. Assign states to IncInfo 
  */
 
-void 
+static void 
 ExecMakeDecision (EState *estate, IncInfo *incInfo)
 {
     ExecMarkDelta(incInfo); /* Step 2a */
@@ -1007,7 +1061,7 @@ ExecGreedyHelper(EState *estate)
  *         Step 3b. combined with IncState, decide PullActions (see include/executor/incmeta.h for details). 
  */
 
-void
+static void
 ExecGenPullAction(IncInfo *incInfo) 
 {
     ExecIncHasUpdate(incInfo); 
@@ -1103,7 +1157,7 @@ ExecIncHasUpdate(IncInfo *incInfo)
     }
 }
 
-void 
+static void 
 ExecResetState(PlanState *ps)
 {
     switch (ps->type) 
@@ -1139,7 +1193,7 @@ ExecResetState(PlanState *ps)
 }
 
 
-void 
+static void 
 ExecInitDelta(PlanState *ps)
 {
     switch (ps->type) 

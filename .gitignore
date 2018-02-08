@@ -29,6 +29,7 @@ win32ver.rc
 *.exe
 lib*dll.def
 lib*.pc
+*TAGS
 
 # Local excludes in root directory
 /GNUmakefile

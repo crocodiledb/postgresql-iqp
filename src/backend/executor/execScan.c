@@ -23,9 +23,10 @@
 #include "utils/memutils.h"
 
 /*
- * totem: a simple method to split the table into batch and delta
+ * totem
  */
 #include "executor/incmeta.h"
+#include "executor/incTupleQueue.h"
 
 static bool tlist_matches_tupdesc(PlanState *ps, List *tlist, Index varno, TupleDesc tupdesc);
 
@@ -512,8 +513,10 @@ ExecScanInc(ScanState *node,
  *
  * ----------------------------------------------------------------
  */
-TupleTableSlot *
+void 
 InitScanInc(ScanState *node) 
 {
     node->tuple_scanned = 0;
+    node->tq_reader = CreateIncTupQueueReader(node->ss_currentRelation, node->ss_ScanTupleSlot->tts_tupleDescriptor); 
+    OpenIncTupQueueReader(node->tq_reader); 
 } 

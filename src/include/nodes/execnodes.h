@@ -34,7 +34,7 @@
  * totem: include IncInfo struct into PlanState
  */
 #include "executor/incinfo.h"
-
+#include "executor/incTupleQueue.h"
 
 /* ----------------
  *		ExprState node
@@ -519,7 +519,8 @@ typedef struct EState
 
     bool        es_incremental; /* totem: execute this query incrementally? */
     IncInfo   **es_incInfo;     /* totem: array of IncInfo * */
-    int         es_numIncInfo; 
+    int         es_numIncInfo;
+    int         es_numLeaf;  
 
     int       **es_deltaCost;       /* totem: cost for computing delta */
     IncState  **es_deltaIncState;   /* totem: two dimension array of inc states */
@@ -539,6 +540,11 @@ typedef struct EState
     double    batchTime;
     IncState  *es_incState;
     int        es_incMemory;  
+
+    bool      es_isSelect;  
+    IncTupQueueReader   *tq_reader[];
+    IncTupQueueWriter   *tq_writer; 
+
 } EState;
 
 
@@ -1020,6 +1026,9 @@ typedef struct ModifyTableState
 	/* controls transition table population for INSERT...ON CONFLICT UPDATE */
 	TupleConversionMap **mt_transition_tupconv_maps;
 	/* Per plan/partition tuple conversion */
+
+    /*totem: add tuple queue writer*/
+    IncTupQueueWriter *tq_writer; 
 } ModifyTableState;
 
 /* ----------------
@@ -1134,6 +1143,7 @@ typedef struct ScanState
 	HeapScanDesc ss_currentScanDesc;
 	TupleTableSlot *ss_ScanTupleSlot;
     int         tuple_scanned; /* totem: simple solution for generating delta data*/
+    IncTupQueueReader *tq_reader; 
 } ScanState;
 
 /* ----------------

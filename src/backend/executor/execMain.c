@@ -275,8 +275,9 @@ standard_ExecutorStart(QueryDesc *queryDesc, int eflags)
     /*
      * totem: initialize IncInfo 
      */
-    if (estate->es_incremental) {
-        ExecInitIncInfo(estate, queryDesc->planstate); 
+    if (estate->es_incremental) 
+    {
+        ExecInitIncInfo(estate, queryDesc); 
     }
 
 	MemoryContextSwitchTo(oldcontext);
@@ -457,7 +458,7 @@ standard_ExecutorFinish(QueryDesc *queryDesc)
 		InstrStopNode(queryDesc->totaltime, 0);
 
     if (estate->es_incremental)
-        ExecCleanIncInfo(estate); 
+        ExecIncFinish(estate, queryDesc->planstate); 
 
 	MemoryContextSwitchTo(oldcontext);
 
@@ -1773,17 +1774,7 @@ ExecutePlan(EState *estate,
                     gettimeofday(&end , NULL);
                     estate->batchTime = GetTimeDiff(start, end); 
 
-                    /* Run the DP algorithm to decide dropping or keeping states */
-                    ExecMakeDecision(estate, planstate->ps_IncInfo); 
- 
-                    /* Let's perform the drop/keep actions */
-                    ExecResetState(planstate); 
- 
-                    /* According to the delta information, we generate pull actions */
-                    ExecGenPullAction(planstate->ps_IncInfo);
-
-                    /* Let's initialize meta data for delta processing */
-                    ExecInitDelta(planstate);  
+                    ExecIncRun(estate, planstate); 
                      
                     gettimeofday(&end , NULL);
                     estate->decisionTime = GetTimeDiff(start, end) - estate->batchTime;                     

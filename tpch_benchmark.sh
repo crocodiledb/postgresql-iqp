@@ -1,11 +1,11 @@
 #!/bin/bash
 
-BENCH_HOME=/home/totemtang/Stream-Repair/postgresql/pg_scripts/tpch_test
+BENCH_HOME=/home/totemtang/IQP/postgresql/pg_scripts/tpch_test
 
-INC=on
+INC=off
 dm=topdown
 
-for query in q3 q9 q10 q18
+for query in q3
 do
    for dm in dp
    do 
@@ -19,7 +19,7 @@ do
              -v v_inc=${INC} \
              -v v_budget=${budget} \
              -v v_dm=${dm} \
-             -f $BENCH_HOME/$query.sql > /dev/null
+             -f $BENCH_HOME/$query.sql
 
        done
    done

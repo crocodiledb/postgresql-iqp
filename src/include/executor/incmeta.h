@@ -45,7 +45,7 @@ extern TupleTableSlot * ExecScanInc(ScanState *node,
 		 ExecScanAccessMtd accessMtd,
 		 ExecScanRecheckMtd recheckMtd); 
 
-extern TupleTableSlot * InitScanInc();
+extern void InitScanInc(ScanState *node);
 
 /*
  * prototypes from functions in executor/nodeHashjoinInc.c
@@ -82,18 +82,11 @@ extern void ExecInitAggInc(AggState *aggstate);
 /*
  * prototypes from functions in executor/incmeta.c
  */
+extern void ExecIncStart(EState *estate, QueryDesc *queryDesc);
 
-extern void ExecInitIncInfo(EState *estate, PlanState *ps); 
+extern void ExecIncRun(EState *estate, PlanState *planstate);
 
-extern void ExecMakeDecision(EState *estate, IncInfo *incInfo); 
-
-extern void ExecGenPullAction(IncInfo *incInfo); 
-    
-extern void ExecResetState(PlanState *ps);
-
-extern void ExecInitDelta(PlanState *ps); 
-
-extern void ExecCleanIncInfo(EState *estate); 
+extern void ExecIncFinish(EState *estate, PlanState *planstate); 
 
 extern double GetTimeDiff(struct timeval x , struct timeval y); 
 

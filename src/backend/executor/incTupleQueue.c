@@ -81,7 +81,7 @@ OpenIncTupQueueReader(IncTupQueueReader * tq_reader)
 {
     shm_tq *tq; 
 
-    tq_reader->tq_id = shmget(tq_reader->tq_key,sizeof(shm_tq),IPC_CREAT|IPC_EXCL);
+    tq_reader->tq_id = shmget(tq_reader->tq_key,sizeof(shm_tq),IPC_CREAT|IPC_EXCL|0666);
     if (tq_reader->tq_id < 0)
     {
         elog(ERROR, "Open Shared Memory Error");

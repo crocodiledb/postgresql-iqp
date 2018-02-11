@@ -33,6 +33,7 @@
 /*
  * totem: include IncInfo struct into PlanState
  */
+#include "executor/incExecDS.h"
 #include "executor/incinfo.h"
 #include "executor/incTupleQueue.h"
 
@@ -541,9 +542,9 @@ typedef struct EState
     IncState  *es_incState;
     int        es_incMemory;  
 
-    bool      es_isSelect;  
-    IncTupQueueReader   *tq_reader[];
-    IncTupQueueWriter   *tq_writer; 
+    bool             es_isSelect;  
+    struct ScanState        **reader_ss;
+    struct ModifyTableState *writer_mt;  
 
 } EState;
 
@@ -1138,12 +1139,12 @@ typedef struct BitmapOrState
  */
 typedef struct ScanState
 {
-	PlanState	ps;				/* its first field is NodeTag */
-	Relation	ss_currentRelation;
-	HeapScanDesc ss_currentScanDesc;
-	TupleTableSlot *ss_ScanTupleSlot;
-    int         tuple_scanned; /* totem: simple solution for generating delta data*/
-    IncTupQueueReader *tq_reader; 
+	PlanState	        ps;				/* its first field is NodeTag */
+	Relation	        ss_currentRelation;
+	HeapScanDesc        ss_currentScanDesc;
+	TupleTableSlot      *ss_ScanTupleSlot;
+    IncTupQueueReader   *tq_reader; /* totem: memory buffer to hold delta data */
+    IncProcState        incProcState; 
 } ScanState;
 
 /* ----------------

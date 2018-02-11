@@ -194,7 +194,8 @@ standard_ExecutorStart(QueryDesc *queryDesc, int eflags)
     /*
      * totem: Set incremental 
      */
-    estate->es_incremental = enable_incremental; 
+    estate->es_incremental = enable_incremental;
+    estate->es_isSelect = (queryDesc->operation == CMD_SELECT); 
 
 	oldcontext = MemoryContextSwitchTo(estate->es_query_cxt);
 
@@ -276,9 +277,7 @@ standard_ExecutorStart(QueryDesc *queryDesc, int eflags)
      * totem: initialize IncInfo 
      */
     if (estate->es_incremental) 
-    {
-        ExecInitIncInfo(estate, queryDesc); 
-    }
+        ExecIncStart(estate, queryDesc->planstate); 
 
 	MemoryContextSwitchTo(oldcontext);
 }

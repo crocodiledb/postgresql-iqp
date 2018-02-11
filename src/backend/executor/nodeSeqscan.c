@@ -37,6 +37,7 @@
  */
 #include "executor/incmeta.h"
 #include "executor/incinfo.h"
+#include "executor/incExecDS.h"
 
 static void InitScanRelation(SeqScanState *node, EState *estate, int eflags);
 static TupleTableSlot *SeqNext(SeqScanState *node);
@@ -204,16 +205,6 @@ ExecInitSeqScan(SeqScan *node, EState *estate, int eflags)
 	scanstate->ss.ps.plan = (Plan *) node;
 	scanstate->ss.ps.state = estate;
 
-    /*
-     * totem: add incremental scanning option
-     */
-    if (estate->es_incremental) {
-	    scanstate->ss.ps.ExecProcNode = ExecSeqScanInc;
-        InitScanInc(&scanstate->ss);
-    } else {
-	    scanstate->ss.ps.ExecProcNode = ExecSeqScan;
-    }
-
 	/*
 	 * Miscellaneous initialization
 	 *
@@ -244,6 +235,19 @@ ExecInitSeqScan(SeqScan *node, EState *estate, int eflags)
 	ExecAssignResultTypeFromTL(&scanstate->ss.ps);
 	ExecAssignScanProjectionInfo(&scanstate->ss);
 
+    /*
+     * totem: add incremental scanning option
+     */
+    if (estate->es_incremental && estate->es_isSelect) 
+    {
+	    scanstate->ss.ps.ExecProcNode = ExecSeqScanInc;
+        InitScanInc(&scanstate->ss);
+    } 
+    else 
+    {
+	    scanstate->ss.ps.ExecProcNode = ExecSeqScan;
+    }
+
 	return scanstate;
 }
 
@@ -257,7 +261,15 @@ void
 ExecEndSeqScan(SeqScanState *node)
 {
 	Relation	relation;
-	HeapScanDesc scanDesc;
+	HeapScanDesc scanDesc; 
+
+    /*
+     * totem
+     */
+    if (node->ss.ps.state->es_incremental && node->ss.ps.state->es_isSelect)
+    {
+        EndScanInc((ScanState *)node);
+    }
 
 	/*
 	 * get information from node
@@ -392,7 +404,7 @@ ExecSeqScanInitializeWorker(SeqScanState *node, shm_toc *toc)
 /*-----------------------------------------------------------------
  *      ExecResetSeqScanState
  * 
- *      totem: Reset SeqScanState
+ *      totem: Reset SeqScanState after batch processing
  *
  * ----------------------------------------------------------------
  */
@@ -413,10 +425,13 @@ void
 ExecInitSeqScanDelta(SeqScanState * node)
 {
     IncInfo *incInfo = node->ss.ps.ps_IncInfo; 
-    incInfo->trigger_computation = -1; 
     if (incInfo->leftAction == PULL_BATCH_DELTA) 
     {
-        node->ss.tuple_scanned = 0; 
+        node->ss.incProcState = PROC_INC_BATCH; 
         ExecReScanSeqScan(node);
+    }
+    else
+    {
+        node->ss.incProcState = PROC_INC_DELTA; 
     }
 }

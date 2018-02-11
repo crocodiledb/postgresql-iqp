@@ -368,6 +368,39 @@ ExecScanReScan(ScanState *node)
 	}
 }
 
+static TupleTableSlot *
+FetchScanInc(ScanState *node)
+{
+    TupleTableSlot *slot;
+    HeapTuple	tuple;
+    MemoryContext oldContext;
+    MemoryContext tupleContext = node->ps.ps_ExprContext->ecxt_per_tuple_memory; 
+    bool done; 
+
+    slot = node->ss_ScanTupleSlot;
+
+    oldContext = MemoryContextSwitchTo(tupleContext);
+    tuple = ReadIncTupQueue(node->tq_reader, &done);
+    MemoryContextSwitchTo(oldContext);
+
+    if (done)
+    {
+        ExecClearTuple(slot);
+    }
+    else
+    {
+        ExecStoreTuple(tuple, /* tuple to store */
+						slot,	/* slot in which to store the tuple */
+						InvalidBuffer,	/* buffer associated with this
+										 * tuple */
+						false);	/* slot should not pfree tuple */
+    }
+
+    return slot; 
+}
+
+
+
 /* ----------------------------------------------------------------
  *		ExecScanInc
  *
@@ -398,20 +431,48 @@ ExecScanInc(ScanState *node,
 	/*
 	 * If we have neither a qual to check nor a projection to do, just skip
 	 * all the overhead and return the raw scan tuple.
+     *
 	 */
 	if (!qual && !projInfo)
 	{
-        node->tuple_scanned++;
+		ResetExprContext(econtext);
         TupleTableSlot *slot;
-        if (node->tuple_scanned == trigger_computation) {
-            slot = node->ss_ScanTupleSlot;
-            ExecClearTuple(slot);
-            MarkTupComplete(slot, false);
-        } else {
-            slot = ExecScanFetch(node, accessMtd, recheckMtd); 
-            MarkTupComplete(slot, true);
+        for (;;)
+        {
+            if (node->incProcState == PROC_NORM_BATCH || node->incProcState == PROC_INC_BATCH)
+            {
+                slot = ExecScanFetch(node, accessMtd, recheckMtd); 
+                if (TupIsNull(slot))
+                {
+                    if (node->incProcState == PROC_INC_BATCH)
+                    {
+                        node->incProcState = PROC_INC_DELTA; 
+                        continue;
+                    }
+                    else
+                    {
+                        slot = ExecClearTuple(node->ss_ScanTupleSlot);
+                        MarkTupComplete(slot, false);
+                    }
+                }
+
+            }
+            else if (node->incProcState == PROC_INC_DELTA)
+            {
+                slot = FetchScanInc(node); 
+                if (TupIsNull(slot))
+                {
+                    slot = ExecClearTuple(node->ss_ScanTupleSlot);
+                    MarkTupComplete(slot, true);
+                }
+            }
+            else
+            {
+                elog(ERROR, "IncProcState %d not supported", node->incProcState); 
+            }
+
+            return slot; 
         }
-        return slot;
 	}
 
 	/*
@@ -429,39 +490,43 @@ ExecScanInc(ScanState *node,
 
 		TupleTableSlot *slot;
 
-        /*
-         * First of all, check whether we should trigger a computation
-         */
-        node->tuple_scanned++;
-        if (node->tuple_scanned == trigger_computation) {
-            if (projInfo) {
-                slot = projInfo->pi_state.resultslot; 
-            } else {
-                slot = node->ss_ScanTupleSlot; 
+            
+        if (node->incProcState == PROC_NORM_BATCH || node->incProcState == PROC_INC_BATCH)
+            slot = ExecScanFetch(node, accessMtd, recheckMtd);
+        else if (node->incProcState == PROC_INC_DELTA)
+            slot = FetchScanInc(node); 
+        else
+            elog(ERROR, "IncProcState %d not supported", node->incProcState); 
+
+    	/*
+    	 * if the slot returned by the accessMtd contains NULL, then it means
+    	 * there is nothing more to scan so we just return an empty slot,
+    	 * being careful to use the projection result slot so it has correct
+    	 * tupleDesc.
+    	 */
+    	if (TupIsNull(slot))
+    	{
+            if (node->incProcState == PROC_INC_BATCH) 
+            {
+                node->incProcState = PROC_INC_DELTA; 
+	            ResetExprContext(econtext);
+                continue;
             }
-            ExecClearTuple(slot);
-            MarkTupComplete(slot, false);
-            return slot; 
-        }
+            else 
+            {
+        		if (projInfo) 
+        			slot = ExecClearTuple(projInfo->pi_state.resultslot);
+                else
+                    slot = ExecClearTuple(node->ss_ScanTupleSlot);
 
-		slot = ExecScanFetch(node, accessMtd, recheckMtd);
+                if (node->incProcState == PROC_NORM_BATCH)
+                    MarkTupComplete(slot, false); 
+                else                                /* PROC_INC_DELTA */
+                    MarkTupComplete(slot, true); 
 
-		/*
-		 * if the slot returned by the accessMtd contains NULL, then it means
-		 * there is nothing more to scan so we just return an empty slot,
-		 * being careful to use the projection result slot so it has correct
-		 * tupleDesc.
-		 */
-		if (TupIsNull(slot))
-		{
-			if (projInfo) {
-				slot = ExecClearTuple(projInfo->pi_state.resultslot);
+                return slot; 
             }
-
-            MarkTupComplete(slot, true); 
-
-            return slot; 
-		}
+    	}
 
 		/*
 		 * place the current tuple into the expr context
@@ -509,14 +574,30 @@ ExecScanInc(ScanState *node,
 /* ----------------------------------------------------------------
  *	    InitScanInc	
  *
- *		    totem: reset meta information for incremental scan
+ *		    totem: init meta information for incremental scan
  *
  * ----------------------------------------------------------------
  */
-void 
+void
 InitScanInc(ScanState *node) 
 {
-    node->tuple_scanned = 0;
-    node->tq_reader = CreateIncTupQueueReader(node->ss_currentRelation, node->ss_ScanTupleSlot->tts_tupleDescriptor); 
+    node->incProcState = PROC_NORM_BATCH; 
+    node->tq_reader = CreateIncTupQueueReader(node->ss_currentRelation, RelationGetDescr(node->ss_currentRelation)); 
     OpenIncTupQueueReader(node->tq_reader); 
 } 
+
+
+void 
+EndScanInc(ScanState *node)
+{
+    CloseIncTupQueueReader(node->tq_reader); 
+}
+
+
+
+
+
+
+
+
+

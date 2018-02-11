@@ -2730,7 +2730,7 @@ ExecInitAgg(Agg *node, EState *estate, int eflags)
     /*
      * totem: let's add the incremental option
      */
-    if (estate->es_incremental) 
+    if (estate->es_incremental && estate->es_isSelect) 
     {
         aggstate->ss.ps.ExecProcNode = ExecAggInc;
         ExecInitAggInc(aggstate); 

@@ -811,6 +811,14 @@ ExecEndIndexScan(IndexScanState *node)
 	IndexScanDesc indexScanDesc;
 	Relation	relation;
 
+    /*
+     * totem
+     */
+    if (node->ss.ps.state->es_incremental && node->ss.ps.state->es_isSelect)
+    {
+        EndScanInc((ScanState *)node);
+    }
+
 	/*
 	 * extract information from the node
 	 */
@@ -868,6 +876,23 @@ ExecIndexRestrPos(IndexScanState *node)
 }
 
 /* ----------------------------------------------------------------
+ *		ExecIndexScanInc(node)
+ *
+ *          totem: Incremental version of ExecSeqScan
+ *
+ * ----------------------------------------------------------------
+ */
+static TupleTableSlot *
+ExecIndexScanInc(PlanState *pstate)
+{
+	IndexScanState *node = castNode(IndexScanState, pstate);
+
+	return ExecScanInc(&node->ss,
+                        (ExecScanAccessMtd) IndexNext,
+						(ExecScanRecheckMtd) IndexRecheck);
+}
+
+/* ----------------------------------------------------------------
  *		ExecInitIndexScan
  *
  *		Initializes the index scan's state information, creates
@@ -891,7 +916,7 @@ ExecInitIndexScan(IndexScan *node, EState *estate, int eflags)
 	indexstate = makeNode(IndexScanState);
 	indexstate->ss.ps.plan = (Plan *) node;
 	indexstate->ss.ps.state = estate;
-	indexstate->ss.ps.ExecProcNode = ExecIndexScan;
+	//indexstate->ss.ps.ExecProcNode = ExecIndexScan;
 
 	/*
 	 * Miscellaneous initialization
@@ -1071,6 +1096,20 @@ ExecInitIndexScan(IndexScan *node, EState *estate, int eflags)
 	{
 		indexstate->iss_RuntimeContext = NULL;
 	}
+
+    /*
+     * totem: add incremental scanning option
+     */
+    if (estate->es_incremental && estate->es_isSelect) 
+    {
+	    indexstate->ss.ps.ExecProcNode = ExecIndexScanInc;
+        InitScanInc(&indexstate->ss);
+    } 
+    else 
+    {
+	    indexstate->ss.ps.ExecProcNode = ExecIndexScan; 
+    }
+
 
 	/*
 	 * all done.
@@ -1758,13 +1797,17 @@ ExecResetIndexScanState(IndexScanState * node)
  * ----------------------------------------------------------------
  */
 void
-ExecInitIndexScanDelta(SeqScanState * node)
+ExecInitIndexScanDelta(IndexScanState * node)
 {
     IncInfo *incInfo = node->ss.ps.ps_IncInfo; 
     incInfo->trigger_computation = -1; 
     if (incInfo->leftAction == PULL_BATCH_DELTA) 
     {
-        node->ss.tuple_scanned = 0; 
+        node->ss.incProcState = PROC_INC_BATCH; 
         ExecReScanIndexScan(node);
+    }
+    else
+    {
+        node->ss.incProcState = PROC_INC_DELTA; 
     }
 }

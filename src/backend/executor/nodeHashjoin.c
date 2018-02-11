@@ -409,7 +409,7 @@ ExecInitHashJoin(HashJoin *node, EState *estate, int eflags)
     /*
      * totem: incremental hash join or not  
      */
-    if (estate->es_incremental) 
+    if (estate->es_incremental && estate->es_isSelect) 
     {
         ExecInitHashJoinInc(hjstate);
         hjstate->js.ps.ExecProcNode = ExecHashJoinInc;

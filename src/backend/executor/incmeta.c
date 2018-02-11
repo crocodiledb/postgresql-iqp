@@ -16,18 +16,23 @@
 #include "executor/incinfo.h"
 #include "executor/incTupleQueue.h"
 
+#include "miscadmin.h"
+
 #define DELTA_COST 0
+
+#define DELTA_THRESHOLD 59939
+#define GEN_DELTA_CMD "/home/totemtang/IQP/postgresql/pg_scripts/tpch_delta/gen_delta.sh"
 
 bool enable_incremental;
 int  memory_budget;     /* kB units*/
 DecisionMethod decision_method; 
 
-static void ExecInitIncInfo(EState *estate, QueryDesc *queryDesc); 
+static void ExecInitIncInfo(EState *estate, PlanState *ps); 
 static void ExecAssignIncInfo (IncInfo **incInfo_array, int numIncInfo, IncInfo *root);
 static IncInfo * ExecInitIncInfoHelper(PlanState *ps, IncInfo *parent, int *count, int *leafCount); 
 
 static void ExecMakeDecision (EState *estate, IncInfo *incInfo); 
-static void ExecMarkDelta(IncInfo *incInfo); 
+static void ExecEstimateDelta(IncInfo *incInfo); 
 static void ExecCollectCostInfo(IncInfo *incInfo); 
 static void RunDPSolution(EState *estate); 
 static void SortDPHasUpdate (EState *estate, int i, int j); 
@@ -39,12 +44,13 @@ static void HashJoinDPNoUpdate (EState *estate, int i, int j);
 static void ExecDPAssignState (EState *estate, int i, int j, PullAction parentAction); 
 static void PrintStateDecision(EState *estate); 
 
-static void ExecResetState(PlanState *ps); 
+static void ExecWaitAndMarkDelta(EState *estate, PlanState *ps); 
 static void ExecGenPullAction(IncInfo *incInfo); 
 static void ExecGenPullActionHelper(IncInfo *incInfo, PullAction parentAction); 
-static bool ExecIncHasUpdate(IncInfo *incInfo); 
+static bool ExecIncPropUpdate(IncInfo *incInfo); 
 
-static void ExecInitDelta(PlanState *ps); 
+static void ExecCleanIncInfo(EState *estate); 
+
 
 /*
  * prototypes for Greedy Algorithms 
@@ -64,41 +70,43 @@ static int MemComparator(const void * a, const void *b)
  * Interfaces for incremental query processing 
  */
 void 
-ExecIncStart(EState *estate, QueryDesc *queryDesc)
+ExecIncStart(EState *estate, PlanState *ps)
 {
-    if (queryDesc->operation == CMD_SELECT)
+    if (estate->es_isSelect)
     {
-        estate->es_isSelect = true; 
-        ExecInitIncInfo(estate, queryDesc);
+        ExecInitIncInfo(estate, ps);
 
         /* Collect TupleQueue Readers */
         IncInfo **incInfoArray = estate->es_incInfo; 
-        estate->tq_reader = palloc(sizeof(IncTupQueueReader *) * estate->es_numLeaf); 
+        estate->reader_ss = palloc(sizeof(ScanState *) * estate->es_numLeaf); 
         for (int i  = 0, j = 0; i < estate->es_numIncInfo; i++) 
         {
             PlanState *ps = incInfoArray[i]->ps; 
             if (ps->lefttree == NULL && ps->righttree == NULL)
             {
-                ScanState *ss = (ScanState *)ps; 
-                estate->tq_reader[j] = ss->tq_reader; 
+                estate->reader_ss[j] = (ScanState *)ps;
                 j++;
             }
         }
     }
     else /* Modification Command; Collect Writer */
     {
-        estate->es_isSelect = false;
-        PlanState *ps = queryDesc->planstate; 
         if (ps->type == T_ModifyTableState)
         {
             ModifyTableState *mt = (ModifyTableState *)ps; 
-            estate->tq_writer = mt->tq_writer; 
+            estate->writer_mt = mt; 
         }
         else
         {
             elog(ERROR, "We assume the root node is Modify Table"); 
         }
     }
+}
+
+static 
+void ExecGenDelta()
+{
+    system(GEN_DELTA_CMD); 
 }
 
 void 
@@ -112,7 +120,13 @@ ExecIncRun(EState *estate, PlanState *planstate)
         /* Let's perform the drop/keep actions */
         ExecResetState(planstate); 
  
-        /* According to the delta information, we generate pull actions */
+        /* An temp solution for generating delta*/
+        ExecGenDelta();
+
+        /* Wait for delta and mark delta */
+        ExecWaitAndMarkDelta(estate, planstate); 
+
+        /* According to the delta information, we generate pull actions */ 
         ExecGenPullAction(planstate->ps_IncInfo);
 
         /* Let's initialize meta data for delta processing */
@@ -148,12 +162,11 @@ ExecIncFinish(EState *estate, PlanState *planstate)
  */
 
 static void 
-ExecInitIncInfo(EState *estate, QueryDesc *queryDesc) 
+ExecInitIncInfo(EState *estate, PlanState *ps) 
 {
     int count = 0; 
     int leafCount = 0; 
     int incMemory = 0; 
-    PlanState *ps = queryDesc->ps; 
 
     ExecInitIncInfoHelper(ps, NULL, &count, &leafCount);
     estate->es_numLeaf = leafCount; 
@@ -308,7 +321,7 @@ ExecInitIncInfoHelper(PlanState *ps, IncInfo *parent, int *count, int *leafCount
 
 /*
  * Step 2. 
- *      2a. Estimate the potential updates and populate them to the IncInfo tree
+ *      2a. Estimate the potential updates and propogate them to the IncInfo tree
  *      2b. Collect memory_cost and computate_cost
  *      2c. Running DP algorithm to determine which states to keep/drop 
  *      2d. Assign states to IncInfo 
@@ -317,7 +330,9 @@ ExecInitIncInfoHelper(PlanState *ps, IncInfo *parent, int *count, int *leafCount
 static void 
 ExecMakeDecision (EState *estate, IncInfo *incInfo)
 {
-    ExecMarkDelta(incInfo); /* Step 2a */
+    ExecEstimateDelta(incInfo); 
+    ExecIncPropUpdate(incInfo); /* Step 2a */
+
     ExecCollectCostInfo(incInfo); /* Step 2b */ 
 
     if (decision_method == DM_DP) 
@@ -331,8 +346,6 @@ ExecMakeDecision (EState *estate, IncInfo *incInfo)
             qsort((void *)estate->es_incInfo, (size_t)estate->es_numIncInfo, sizeof(IncInfo *), MemComparator);
         ExecGreedyHelper(estate); 
     }
-
-    //PrintStateDecision(estate); 
 }
 
 static void
@@ -348,15 +361,13 @@ PrintStateDecision(EState *estate)
 }
 
 static void 
-ExecMarkDelta(IncInfo *incInfo) 
+ExecEstimateDelta(IncInfo *incInfo) 
 {
     IncInfo *left = incInfo; 
 
     while (left->lefttree != NULL)
         left = left->lefttree; 
-    left->leftUpdate = true;  
-    
-    ExecIncHasUpdate(incInfo); 
+    left->leftUpdate = true;      
 }
 
 static void
@@ -1049,6 +1060,41 @@ ExecGreedyHelper(EState *estate)
     }
 }
 
+/*
+ * Wait for delta and if there are delta coming, mark them 
+ */
+
+static void 
+ExecWaitAndMarkDelta(EState *estate, PlanState *ps)
+{
+    int temp_count; 
+    IncTupQueueReader *tq_reader; 
+    int numDelta = 0; 
+    int threshold = DELTA_THRESHOLD; 
+
+    ScanState **reader_ss_array = estate->reader_ss; 
+
+    for (;;) 
+    {
+		CHECK_FOR_INTERRUPTS();
+
+        for(int i = 0; i < estate->es_numLeaf; i++) 
+        {
+            tq_reader = reader_ss_array[i]->tq_reader; 
+            temp_count = GetIncTupQueueSize(tq_reader); 
+            if (temp_count != 0)
+                reader_ss_array[i]->ps.ps_IncInfo->leftUpdate = true; 
+            else
+                reader_ss_array[i]->ps.ps_IncInfo->leftUpdate =false; 
+            numDelta += temp_count; 
+        }
+        if (numDelta >= threshold)
+            break;
+
+       sleep(1); 
+    }
+}
+
 
 /*
  * Step 3. After dropping/keeping states is done, 
@@ -1064,7 +1110,7 @@ ExecGreedyHelper(EState *estate)
 static void
 ExecGenPullAction(IncInfo *incInfo) 
 {
-    ExecIncHasUpdate(incInfo); 
+    ExecIncPropUpdate(incInfo); 
 
     ExecGenPullActionHelper(incInfo, PULL_BATCH_DELTA); 
 }
@@ -1132,7 +1178,7 @@ ExecGenPullActionHelper(IncInfo *incInfo, PullAction parentAction)
 }
 
 static bool 
-ExecIncHasUpdate(IncInfo *incInfo)
+ExecIncPropUpdate(IncInfo *incInfo)
 {
     if (incInfo->lefttree == NULL && incInfo->righttree == NULL) 
     {
@@ -1141,7 +1187,7 @@ ExecIncHasUpdate(IncInfo *incInfo)
     else if (incInfo->righttree == NULL) 
     {
         incInfo->rightUpdate = false;
-        incInfo->leftUpdate = ExecIncHasUpdate(incInfo->lefttree); 
+        incInfo->leftUpdate = ExecIncPropUpdate(incInfo->lefttree); 
         return incInfo->leftUpdate | incInfo->rightUpdate; 
     }
     else if (incInfo->lefttree == NULL) /* This case is impossible; outer plan is not NULL except for leaf nodes */
@@ -1151,13 +1197,13 @@ ExecIncHasUpdate(IncInfo *incInfo)
     }
     else
     {
-        incInfo->leftUpdate = ExecIncHasUpdate(incInfo->lefttree); 
-        incInfo->rightUpdate = ExecIncHasUpdate(incInfo->righttree); 
+        incInfo->leftUpdate = ExecIncPropUpdate(incInfo->lefttree); 
+        incInfo->rightUpdate = ExecIncPropUpdate(incInfo->righttree); 
         return incInfo->leftUpdate | incInfo->rightUpdate; 
     }
 }
 
-static void 
+void 
 ExecResetState(PlanState *ps)
 {
     switch (ps->type) 
@@ -1193,7 +1239,7 @@ ExecResetState(PlanState *ps)
 }
 
 
-static void 
+void 
 ExecInitDelta(PlanState *ps)
 {
     switch (ps->type) 
@@ -1238,7 +1284,7 @@ FreeIncInfo(IncInfo *root)
     pfree(root); 
 }
 
-void 
+static void 
 ExecCleanIncInfo(EState *estate)
 {
     /* For Stat*/

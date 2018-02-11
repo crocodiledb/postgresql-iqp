@@ -53,6 +53,11 @@
 #include "utils/rel.h"
 #include "utils/tqual.h"
 
+/*
+ * totem
+ */
+#include "executor/incTupleQueue.h"
+
 
 static bool ExecOnConflictUpdate(ModifyTableState *mtstate,
 					 ResultRelInfo *resultRelInfo,
@@ -270,6 +275,12 @@ ExecInsert(ModifyTableState *mtstate,
 	 * writable copy
 	 */
 	tuple = ExecMaterializeSlot(slot);
+
+    /*
+     * totem
+     */
+    if (mtstate->tq_writer)
+        WriteIncTupQueue(mtstate->tq_writer,  tuple); 
 
 	/*
 	 * get information on the (current) result relation
@@ -1828,6 +1839,7 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 	 * create state structure
 	 */
 	mtstate = makeNode(ModifyTableState);
+
 	mtstate->ps.plan = (Plan *) node;
 	mtstate->ps.state = estate;
 	mtstate->ps.ExecProcNode = ExecModifyTable;
@@ -1838,6 +1850,18 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 
 	mtstate->mt_plans = (PlanState **) palloc0(sizeof(PlanState *) * nplans);
 	mtstate->resultRelInfo = estate->es_result_relations + node->resultRelIndex;
+
+    /*
+     * totem 
+     */
+    mtstate->tq_writer = NULL; 
+    if (estate->es_incremental)
+    {
+        Relation resultRel = mtstate->resultRelInfo->ri_RelationDesc; 
+        mtstate->tq_writer = CreateIncTupQueueWriter(resultRel, RelationGetDescr(resultRel));
+        if (!OpenIncTupQueueWriter(mtstate->tq_writer))
+            mtstate->tq_writer = NULL; 
+    }
 
 	/* If modifying a partitioned table, initialize the root table info */
 	if (node->rootResultRelIndex >= 0)
@@ -2343,6 +2367,12 @@ void
 ExecEndModifyTable(ModifyTableState *node)
 {
 	int			i;
+
+    /*
+     * totem
+     */
+    if (node->tq_writer)
+        CloseIncTupQueueWriter(node->tq_writer); 
 
 	/*
 	 * Allow any FDWs to shut down

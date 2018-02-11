@@ -41,11 +41,14 @@ extern DecisionMethod decision_method;
  * prototypes from functions in executor/execScan.c
  */
 
+extern void InitScanInc(ScanState *node);
+
 extern TupleTableSlot * ExecScanInc(ScanState *node,
 		 ExecScanAccessMtd accessMtd,
 		 ExecScanRecheckMtd recheckMtd); 
 
-extern void InitScanInc(ScanState *node);
+extern void EndScanInc(ScanState *node); 
+
 
 /*
  * prototypes from functions in executor/nodeHashjoinInc.c
@@ -82,11 +85,15 @@ extern void ExecInitAggInc(AggState *aggstate);
 /*
  * prototypes from functions in executor/incmeta.c
  */
-extern void ExecIncStart(EState *estate, QueryDesc *queryDesc);
+extern void ExecIncStart(EState *estate, PlanState *planstate);
 
 extern void ExecIncRun(EState *estate, PlanState *planstate);
 
 extern void ExecIncFinish(EState *estate, PlanState *planstate); 
+
+extern void ExecResetState(PlanState *ps); 
+
+extern void ExecInitDelta(PlanState *ps); 
 
 extern double GetTimeDiff(struct timeval x , struct timeval y); 
 

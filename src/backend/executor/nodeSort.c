@@ -175,7 +175,7 @@ ExecInitSort(Sort *node, EState *estate, int eflags)
     /*
      * totem: enable incremental computing or not
      */
-    if (estate->es_incremental) 
+    if (estate->es_incremental && estate->es_isSelect) 
     {
         ExecInitSortInc(sortstate); 
         eflags |= EXEC_FLAG_REWIND; /* always support rewind */

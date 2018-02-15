@@ -35,6 +35,7 @@
  */
 #include "executor/incExecDS.h"
 #include "executor/incinfo.h"
+#include "executor/incTQPool.h"
 #include "executor/incTupleQueue.h"
 
 /* ----------------
@@ -540,10 +541,12 @@ typedef struct EState
     double    repairTime;
     double    batchTime;
     IncState  *es_incState;
-    int        es_incMemory;  
+    int        es_incMemory; 
+    int        es_totalMemCost;  
 
-    bool             es_isSelect;  
-    struct ScanState        **reader_ss;
+    bool             es_isSelect;
+    IncTQPool        *tq_pool; 
+    struct ScanState **reader_ss; 
     struct ModifyTableState *writer_mt;  
 
 } EState;
@@ -1651,6 +1654,7 @@ typedef struct NestLoopState
 	bool		nl_NeedNewOuter;
 	bool		nl_MatchedOuter;
 	TupleTableSlot *nl_NullInnerTupleSlot;
+    bool        nl_isComplete;     /* totem: isComplete or not */
 } NestLoopState;
 
 /* ----------------

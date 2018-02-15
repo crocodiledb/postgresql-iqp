@@ -2079,24 +2079,24 @@ create_nestloop_path(PlannerInfo *root,
 	 * because the restrict_clauses list can affect the size and cost
 	 * estimates for this path.
 	 */
-	if (bms_overlap(inner_req_outer, outer_path->parent->relids))
-	{
-		Relids		inner_and_outer = bms_union(inner_path->parent->relids,
-												inner_req_outer);
-		List	   *jclauses = NIL;
-		ListCell   *lc;
-
-		foreach(lc, restrict_clauses)
-		{
-			RestrictInfo *rinfo = (RestrictInfo *) lfirst(lc);
-
-			if (!join_clause_is_movable_into(rinfo,
-											 inner_path->parent->relids,
-											 inner_and_outer))
-				jclauses = lappend(jclauses, rinfo);
-		}
-		restrict_clauses = jclauses;
-	}
+//	if (bms_overlap(inner_req_outer, outer_path->parent->relids))
+//	{
+//		Relids		inner_and_outer = bms_union(inner_path->parent->relids,
+//												inner_req_outer);
+//		List	   *jclauses = NIL;
+//		ListCell   *lc;
+//
+//		foreach(lc, restrict_clauses)
+//		{
+//			RestrictInfo *rinfo = (RestrictInfo *) lfirst(lc);
+//
+//			if (!join_clause_is_movable_into(rinfo,
+//											 inner_path->parent->relids,
+//											 inner_and_outer))
+//				jclauses = lappend(jclauses, rinfo);
+//		}
+//		restrict_clauses = jclauses;
+//	}
 
 	pathnode->path.pathtype = T_NestLoop;
 	pathnode->path.parent = joinrel;

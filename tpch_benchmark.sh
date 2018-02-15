@@ -3,14 +3,14 @@
 BENCH_HOME=/home/totemtang/IQP/postgresql/pg_scripts/tpch_test
 DELTA_HOME=/home/totemtang/IQP/postgresql/pg_scripts/tpch_delta
 
-INC=off
+INC=on
 dm=topdown
 
-for query in q10
+for query in q5
 do
-   for dm in dp
+   for dm in dp 
    do 
-       for budget in 0
+       for budget in 120 
        do
            let budget=budget*1024
            psql \
@@ -20,7 +20,7 @@ do
              -v v_inc=${INC} \
              -v v_budget=${budget} \
              -v v_dm=${dm} \
-             -f $BENCH_HOME/$query.sql > /dev/null
+             -f $BENCH_HOME/$query.sql
            if [ "$INC" == "on" ]
            then
                $DELTA_HOME/delete_delta.sh

@@ -21,36 +21,6 @@
 #include <sys/ipc.h>
 #include <sys/shm.h>
 
-#define SHM_SIZE 10*1024*1024
-
-#define GEN_TQ_KEY(r) \
-    ((key_t)(r->rd_node.relNode))
-
-typedef struct shm_tq {
-    int tuple_num;
-    int head; 
-    int tail; 
-    char data[SHM_SIZE]
-} shm_tq; 
-
-
-struct IncTupQueueReader
-{
-    int         tq_id;
-    key_t       tq_key; 
-    TupleDesc	tupledesc;
-    shm_tq     *tq; 
-};
-
-struct IncTupQueueWriter
-{
-    int         tq_id;
-    key_t       tq_key;
-    TupleDesc   tupledesc; 
-    shm_tq     *tq; 
-};
-
-
 static HeapTuple DecomposeIncTuple(int nbytes, HeapTupleHeader data);
 
 static int byteArrayToInt(char data[], int index); 
@@ -100,6 +70,9 @@ OpenIncTupQueueReader(IncTupQueueReader * tq_reader)
     tq->tail = 0; 
     tq_reader->tq = tq; 
 
+    tq_reader->ss_head = 0;
+    tq_reader->ss_cur_num = 0; 
+    tq_reader->ss_total_num = 0; 
 }
 
 int 
@@ -108,18 +81,36 @@ GetIncTupQueueSize(IncTupQueueReader *tq_reader)
     return tq_reader->tq->tuple_num; 
 }
 
+IncTupQueueReader *
+GetIncTupQueueSnapShot(IncTupQueueReader *tq_reader, IncTupQueueReader *ss_reader)
+{
+    if (ss_reader == NULL) {
+        ss_reader = (IncTupQueueReader *)palloc(sizeof(IncTupQueueReader)); 
+
+        ss_reader->tq_id = tq_reader->tq_id; 
+        ss_reader->tq_key = tq_reader->tq_key;
+        ss_reader->tupledesc = tq_reader->tupledesc; 
+        ss_reader->tq = tq_reader->tq; 
+    }
+
+    ss_reader->ss_cur_num = tq_reader->tq->tuple_num; 
+    ss_reader->ss_total_num = tq_reader->tq->tuple_num; 
+    ss_reader->ss_head = tq_reader->tq->head; 
+}
+
+/*
+ * Read works on the Snapshot
+ * */
 HeapTuple 
 ReadIncTupQueue(IncTupQueueReader *tq_reader, bool *done)
 {
     HeapTuple ht;
 
     shm_tq * tq = tq_reader->tq; 
-    int head = tq->head; 
+    int head = tq_reader->ss_head; 
 
-    if (tq->tuple_num == 0)
+    if (tq_reader->ss_cur_num == 0)
     {
-        tq->head = 0;
-        tq->tail = 0;
         *done = true; 
         return NULL; 
     }
@@ -129,9 +120,9 @@ ReadIncTupQueue(IncTupQueueReader *tq_reader, bool *done)
     int nbytes = byteArrayToInt(tq->data, head);
     head = head + 4; 
     ht = DecomposeIncTuple(nbytes, &tq->data[head]); 
-    tq->head = head + nbytes; 
+    tq_reader->ss_head = head + nbytes; 
 
-    tq->tuple_num--; 
+    tq_reader->ss_cur_num--; 
 
 	Assert(ht);
 
@@ -155,13 +146,24 @@ DecomposeIncTuple(int nbytes, HeapTupleHeader data)
     return heap_copytuple(&htup); 
 }
 
+void 
+DrainIncTupQueue(IncTupQueueReader *tq_reader, IncTupQueueReader *ss_reader)
+{
+    if (ss_reader == NULL || tq_reader->tq->tuple_num == 0) /* Just Initialized or Reset already */
+        return;
+
+    tq_reader->tq->head = 0;
+    tq_reader->tq->tail = 0;
+    tq_reader->tq->tuple_num = 0; 
+
+    Assert(tq_reader->tq->tuple_num == ss_reader->ss_total_num); 
+}
+
 void  
 CloseIncTupQueueReader(IncTupQueueReader * tq_reader)
 {
     shmdt((const void *)tq_reader->tq);
     shmctl(tq_reader->tq_id,IPC_RMID,0);
-
-    return; 
 }
 
 void 

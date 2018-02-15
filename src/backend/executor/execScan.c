@@ -366,6 +366,10 @@ ExecScanReScan(ScanState *node)
 			}
 		}
 	}
+
+    /* totem: add ReScan Inc here */
+    if (estate->es_incremental && estate->es_isSelect)
+        ReScanScanInc(node); 
 }
 
 static TupleTableSlot *
@@ -582,21 +586,32 @@ void
 InitScanInc(ScanState *node) 
 {
     node->incProcState = PROC_NORM_BATCH; 
-    node->tq_reader = CreateIncTupQueueReader(node->ss_currentRelation, RelationGetDescr(node->ss_currentRelation)); 
-    OpenIncTupQueueReader(node->tq_reader); 
+    node->tq_reader = NULL; 
 } 
 
 
 void 
 EndScanInc(ScanState *node)
 {
-    CloseIncTupQueueReader(node->tq_reader); 
+
 }
 
+void 
+ReScanScanInc(ScanState *node)
+{
+    if (node->incProcState != PROC_NORM_BATCH ) /* Not in Batch Processing*/ 
+    {
+        IncInfo *incInfo = node->ps.ps_IncInfo;
+        IncTQPool *tq_pool = node->ps.state->tq_pool; 
 
+        node->tq_reader = GetTQReader(tq_pool, node->ss_currentRelation, node->tq_reader); /* Take a new snapshot (i.e. reset) */
 
-
-
+        if (incInfo->leftAction == PULL_BATCH_DELTA) 
+            node->incProcState = PROC_INC_BATCH; 
+        else
+            node->incProcState = PROC_INC_DELTA; 
+    }
+}
 
 
 

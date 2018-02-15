@@ -49,6 +49,15 @@ extern TupleTableSlot * ExecScanInc(ScanState *node,
 
 extern void EndScanInc(ScanState *node); 
 
+extern void ReScanScanInc(ScanState *node); 
+
+/*
+ * prototypes from functions in executor/nodeNestloopInc.c
+ * */
+
+extern void ExecInitNestLoopInc(NestLoopState *node); 
+
+extern TupleTableSlot * ExecNestLoopInc(PlanState *pstate); 
 
 /*
  * prototypes from functions in executor/nodeHashjoinInc.c
@@ -100,6 +109,7 @@ extern double GetTimeDiff(struct timeval x , struct timeval y);
 /*
  * prototypes from functions for ExecResetState 
  */
+extern void ExecResetNestLoopState(NestLoopState * node); 
 
 extern void ExecResetHashJoinState(HashJoinState * node); 
 
@@ -116,6 +126,7 @@ extern void ExecResetSortState(SortState * node);
 /*
  * prototypes from functions for ExecInitDelta
  */
+extern void ExecInitNestLoopDelta(NestLoopState * node); 
 
 extern void ExecInitHashJoinDelta(HashJoinState * node); 
 

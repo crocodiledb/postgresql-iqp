@@ -1756,10 +1756,10 @@ ExecutePlan(EState *estate,
         {
             if (TupIsComplete(slot)) 
             {
-                if (estate->es_incremental)
+                if (estate->es_incremental && estate->es_isSelect)
                 {
                     gettimeofday(&end , NULL);
-                    estate->repairTime = GetTimeDiff(start, end) - estate->batchTime; 
+                    estate->repairTime = GetTimeDiff(start, end);  
                 }
                 /* Allow nodes to release or shut down resources. */
 			    (void) ExecShutdownNode(planstate);
@@ -1767,7 +1767,7 @@ ExecutePlan(EState *estate,
             } 
             else 
             {
-                if (estate->es_incremental) 
+                if (estate->es_incremental && estate->es_isSelect) 
                 {
 
                     gettimeofday(&end , NULL);
@@ -1775,8 +1775,7 @@ ExecutePlan(EState *estate,
 
                     ExecIncRun(estate, planstate); 
                      
-                    gettimeofday(&end , NULL);
-                    estate->decisionTime = GetTimeDiff(start, end) - estate->batchTime;                     
+                    gettimeofday(&start , NULL);
                    
                 }
                 continue;

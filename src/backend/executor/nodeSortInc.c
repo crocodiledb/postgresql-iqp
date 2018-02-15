@@ -69,11 +69,7 @@ ExecSortInc(PlanState *pstate)
             MarkTupComplete(slot, node->isComplete); 
             return slot; 
         }
-        /*
-         * we compact it to the stashed state and build a new one. 
-         */
-        ExecCompactSort(node); 
-
+        
 		Sort	   *plannode = (Sort *) node->ss.ps.plan;
 		PlanState  *outerNode;
 		TupleDesc	tupDesc;
@@ -86,27 +82,30 @@ ExecSortInc(PlanState *pstate)
 		 * sorted data.
 		 */
 		estate->es_direction = ForwardScanDirection;
+        outerNode = outerPlanState(node);
 
-		/*
-		 * Initialize tuplesort module.
-		 */
-		SO1_printf("ExecSort: %s\n",
-				   "calling tuplesort_begin");
-
-		outerNode = outerPlanState(node);
-		tupDesc = ExecGetResultType(outerNode);
-
-		tuplesortstate = tuplesort_begin_heap(tupDesc,
-											  plannode->numCols,
-											  plannode->sortColIdx,
-											  plannode->sortOperators,
-											  plannode->collations,
-											  plannode->nullsFirst,
-											  work_mem,
-											  node->randomAccess);
-		if (node->bounded)
-			tuplesort_set_bound(tuplesortstate, node->bound);
-		node->tuplesortstate = (void *) tuplesortstate;
+        if (node->tuplesortstate == NULL)
+        {
+    		/*
+    		 * Initialize tuplesort module.
+    		 */
+    		SO1_printf("ExecSort: %s\n",
+    				   "calling tuplesort_begin");
+    
+    		tupDesc = ExecGetResultType(outerNode);
+    
+    		tuplesortstate = tuplesort_begin_heap(tupDesc,
+    											  plannode->numCols,
+    											  plannode->sortColIdx,
+    											  plannode->sortOperators,
+    											  plannode->collations,
+    											  plannode->nullsFirst,
+    											  work_mem,
+    											  node->randomAccess);
+    		if (node->bounded)
+    			tuplesort_set_bound(tuplesortstate, node->bound);
+    		node->tuplesortstate = (void *) tuplesortstate;
+        }
 
 		/*
 		 * Scan the subplan and feed all the tuples to tuplesort.
@@ -178,6 +177,7 @@ ExecInitSortInc(SortState *node)
     node->isComplete = false;
     node->isEOF = true;
     node->stashedstate = NULL;
+    node->tuplesortstate = NULL; 
 }
 
 /* ----------------------------------------------------------------
@@ -262,6 +262,24 @@ ExecExchangeSortState(SortState *node)
 void 
 ExecResetSortState(SortState * node)
 {
+    IncInfo *incInfo = node->ss.ps.ps_IncInfo; 
+    if (incInfo->leftIncState == STATE_DROP) 
+    {
+        tuplesort_end(node->tuplesortstate); 
+        node->tuplesortstate = NULL; 
+    }
+    else if (incInfo->leftIncState == STATE_KEEPMEM)
+    {
+        tuplesort_rescan((Tuplesortstate *) node->tuplesortstate);
+        tuplesort_reverttoheap((Tuplesortstate *) node->tuplesortstate);
+    }
+    else
+    {
+        Assert(false); /* TODO: not implemented yet; will do it soon */
+    }
+
+    node->isEOF = true; 
+
     PlanState *outerPlan;
     outerPlan = outerPlanState(node);
     ExecResetState(outerPlan); 

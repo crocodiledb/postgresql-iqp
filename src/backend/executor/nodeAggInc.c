@@ -2155,6 +2155,8 @@ agg_retrieve_direct(AggState *aggstate)
 					}
 					else
 					{
+                        /* totem */
+                        aggstate->isComplete = TupIsComplete(outerslot);
 						aggstate->agg_done = true;
 						/* If we are grouping, we should produce no tuples too */
 						if (node->aggstrategy != AGG_PLAIN)
@@ -2222,6 +2224,8 @@ agg_retrieve_direct(AggState *aggstate)
 						else
 						{
 							aggstate->agg_done = true;
+                            /* totem */
+                            aggstate->isComplete = TupIsComplete(outerslot); 
 							break;
 						}
 					}
@@ -2477,22 +2481,8 @@ ExecAggInc(PlanState *pstate)
     {
         result_slot = node->ss.ps.ps_ProjInfo->pi_state.resultslot; 
         ExecClearTuple(result_slot);
-        if (node->isComplete) 
-        {
-            MarkTupComplete(result_slot, true);
-        }
-        else 
-        {
-            /* reset the states of Aggregation */
-	        node->agg_done = false;
-            
-            Assert(node->aggstrategy == AGG_HASHED);
+        MarkTupComplete(result_slot, node->isComplete);
 
-            node->table_filled = false;
-		    ResetExprContext(node->tmpcontext);
-
-            MarkTupComplete(result_slot, false);
-        }
         return result_slot; 
     }
 
@@ -2516,30 +2506,86 @@ ExecInitAggInc(AggState *aggstate)
 
 void 
 ExecResetAggState(AggState * node)
-{ 
+{
+	ExprContext *econtext = node->ss.ps.ps_ExprContext;
+	PlanState  *outerPlan = outerPlanState(node);
+	Agg		   *aggnode = (Agg *) node->ss.ps.plan;
+	int			transno;
+	int			numGroupingSets = Max(node->maxsets, 1);
+	int			setno;
+
     node->agg_done = false;
-    node->table_filled = false;
 
-    IncInfo *incInfo = node->ss.ps.ps_IncInfo;
-    if (incInfo->leftIncState == STATE_DROP) 
-    {		
-        ReScanExprContext(node->hashcontext);
-		/* Rebuild an empty hash table */
-		//build_hash_table(node);
-        node->table_created = false; 
-		/* iterator will be reset when the table is filled */
-        node->distGroups = 0; 
-    } 
-    else if (incInfo->leftIncState == STATE_KEEPDISK)
+    if (node->aggstrategy == AGG_HASHED)
     {
-        Assert(false); /* not implemented yet; will do it soon */
+        node->table_filled = false;
+    
+        IncInfo *incInfo = node->ss.ps.ps_IncInfo;
+        if (incInfo->leftIncState == STATE_DROP) 
+        {		
+            ReScanExprContext(node->hashcontext);
+    		/* Rebuild an empty hash table */
+    		//build_hash_table(node);
+            node->table_created = false; 
+    		/* iterator will be reset when the table is filled */
+            node->distGroups = 0; 
+        } 
+        else if (incInfo->leftIncState == STATE_KEEPDISK)
+        {
+            Assert(false); /* not implemented yet; will do it soon */
+        } 
+        /*else  //keep in main memory 
+        {
+        }*/
     } 
-    /*else  //keep in main memory 
+    else if (node->aggstrategy == AGG_SORTED)
     {
-    }*/
+    	/* Make sure we have closed any open tuplesorts */
+    	for (transno = 0; transno < node->numtrans; transno++)
+    	{
+    		for (setno = 0; setno < numGroupingSets; setno++)
+    		{
+    			AggStatePerTrans pertrans = &node->pertrans[transno];
+    
+    			if (pertrans->sortstates[setno])
+    			{
+    				tuplesort_end(pertrans->sortstates[setno]);
+    				pertrans->sortstates[setno] = NULL;
+    			}
+    		}
+    	}
 
-    PlanState *outerPlan;
-    outerPlan = outerPlanState(node);
+    	for (setno = 0; setno < numGroupingSets; setno++)
+	    {
+		    ReScanExprContext(node->aggcontexts[setno]);
+	    }
+
+    	/* Release first tuple of group, if we have made a copy */
+    	if (node->grp_firstTuple != NULL)
+    	{
+    		heap_freetuple(node->grp_firstTuple);
+    		node->grp_firstTuple = NULL;
+    	}
+    	ExecClearTuple(node->ss.ss_ScanTupleSlot);
+    
+    	/* Forget current agg values */
+    	MemSet(econtext->ecxt_aggvalues, 0, sizeof(Datum) * node->numaggs);
+    	MemSet(econtext->ecxt_aggnulls, 0, sizeof(bool) * node->numaggs);
+
+		MemSet(node->pergroup, 0,
+			   sizeof(AggStatePerGroupData) * node->numaggs * numGroupingSets);
+
+		/* reset to phase 1 */
+		initialize_phase(node, 1);
+
+		node->input_done = false;
+		node->projected_set = -1;
+    } 
+    else
+    {
+        elog(ERROR, "We only support AGG_HASHED and AGG_SORTED"); 
+    }
+
     ExecResetState(outerPlan); 
 }
 
@@ -2554,18 +2600,25 @@ ExecInitAggDelta(AggState * node)
 int 
 ExecAggMemoryCost(AggState * node)
 {
-    Plan *plan = node->ss.ps.plan; 
-	Size hashentrysize;
-
-	/* Estimate per-hash-entry space at tuple width... */
-	hashentrysize = MAXALIGN(plan->plan_width) +
-        MAXALIGN(SizeofMinimalTupleHeader);
-
-	/* plus space for pass-by-ref transition values... */
-	//hashentrysize += agg_costs->transitionSpace;
-
-	/* plus the per-hash-entry overhead */
-	hashentrysize += hash_agg_entry_size(node->numaggs);
-
-    return (int)((hashentrysize*node->distGroups + 1023) / 1024);  
+    if (node->aggstrategy == AGG_HASHED) 
+    {
+        Plan *plan = node->ss.ps.plan; 
+    	Size hashentrysize;
+    
+    	/* Estimate per-hash-entry space at tuple width... */
+    	hashentrysize = MAXALIGN(plan->plan_width) +
+            MAXALIGN(SizeofMinimalTupleHeader);
+    
+    	/* plus space for pass-by-ref transition values... */
+    	//hashentrysize += agg_costs->transitionSpace;
+    
+    	/* plus the per-hash-entry overhead */
+    	hashentrysize += hash_agg_entry_size(node->numaggs);
+    
+        return (int)((hashentrysize*node->distGroups + 1023) / 1024);  
+    }
+    else
+    {
+        return 0; 
+    }
 }

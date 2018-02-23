@@ -2481,7 +2481,7 @@ ExecAggInc(PlanState *pstate)
     {
         result_slot = node->ss.ps.ps_ProjInfo->pi_state.resultslot; 
         ExecClearTuple(result_slot);
-        MarkTupComplete(result_slot, node->isComplete);
+        //MarkTupComplete(result_slot, node->isComplete);
 
         return result_slot; 
     }

@@ -30,6 +30,13 @@
 #include "executor/incmeta.h"
 #include "executor/incinfo.h"
 
+static HashJoin *BuildHJFromNL(NestLoop *nl);
+static Hash *BuildHashFromNL(NestLoop *nl);
+static void LinkHJToNL(NestLoopState *nl_state, HashJoinState *hj_state); 
+static List* ExtractHashClauses(List *joinclauses); 
+static List* ExtractNonHashClauses(List *joinclauses); 
+
+
 /* ----------------------------------------------------------------
  *		ExecNestLoopIncReal(node)
  *
@@ -272,18 +279,18 @@ ExecNestLoopInc(PlanState *pstate)
     {
         result_slot = node->js.ps.ps_ProjInfo->pi_state.resultslot; 
         ExecClearTuple(result_slot);
-        if (node->nl_isComplete) 
+        /*if (node->nl_isComplete) 
         {
             MarkTupComplete(result_slot, true);
         }
         else 
         {
-            /* reset the states of nest loop */
+            // reset the states of nest loop
         	node->nl_NeedNewOuter = true;
 	        node->nl_MatchedOuter = false;
 
             MarkTupComplete(result_slot, false);
-        }
+        }*/
         return result_slot; 
     }
 }
@@ -297,9 +304,36 @@ ExecNestLoopInc(PlanState *pstate)
  */
 
 void 
-ExecInitNestLoopInc(NestLoopState *node)
+ExecInitNestLoopInc(NestLoopState *node, int eflags)
 {
     node->nl_isComplete = false;
+
+    NestLoop *plan  = (NestLoop *)node->js.ps.plan;
+
+    HashJoin *hj_plan = BuildHJFromNL(plan); 
+    Hash     *hash    = BuildHashFromNL(plan); 
+    EState   *estate  = node->js.ps.state;
+
+    /* Link left plan and right plan for hj_plan */
+    outerPlan(hj_plan) = outerPlan(plan);
+    innerPlan(hj_plan) = hash; 
+
+    /* Provide left PlanState */
+    estate->leftChildExist = true;
+    estate->tempLeftPS = outerPlanState(node); 
+
+    HashJoinState *hj_state = ExecInitHashJoin(hj_plan, estate, eflags); 
+
+    /* Link right Plan/PlanState to hash_plan/hash_state */
+    HashState *hash_state = innerPlanState(hj_state);
+    Plan *hash_plan = hash_state->ps.plan;
+    Plan *nl_plan = node->js.ps.plan;
+
+    outerPlan(hash_plan) = innerPlan(nl_plan); 
+    outerPlanState(hash_state) = innerPlanState(node); 
+
+    node->nl_hj = hj_state; 
+    
 }
 
 
@@ -349,5 +383,86 @@ ExecInitNestLoopDelta(NestLoopState * node)
     ExecInitDelta(outerPlan); 
 
     return; 
+}
+
+static HashJoin *
+BuildHJFromNL(NestLoop *nl)
+{
+	Plan	 *nl_plan = &nl->join.plan; 
+
+    HashJoin *hj = makeNode(HashJoin);
+    Plan     *hj_plan = &hj->join.plan;
+
+	hj_plan->targetlist = nl_plan->targetlist; 
+    hj_plan->qual = nl_plan->qual; 
+    hj_plan->lefttree = NULL;
+    hj_plan->righttree = NULL; 
+
+    hj->join.inner_unique = nl->join.inner_unique;
+    hj->join.jointype = nl->join.jointype;
+    hj->join.joinqual = ExtractNonHashClauses(nl->join.joinqual); 
+    hj->hashclauses   = ExtractHashClauses(nl->join.joinqual);
+
+    return hj; 
+}
+
+static Hash*
+BuildHashFromNL(NestLoop *nl)
+{
+	Plan	 *nl_plan = &nl->join.plan; 
+
+    Hash     *hash = makeNode(Hash); 
+    Plan     *hash_plan = &hash->plan; 
+    Plan     *inner_plan = innerPlan(nl_plan); 
+
+    hash_plan->targetlist = inner_plan->targetlist; 
+    hash_plan->qual = NIL;
+	hash_plan->lefttree = NULL;  
+	hash_plan->righttree = NULL;
+
+	hash->skewTable = InvalidOid; 
+	hash->skewColumn = 0; 
+	hash->skewInherit = true; 
+
+    return hash; 
+}
+
+static void
+LinkHJToNL(NestLoopState *nl_state, HashJoinState *hj_state)
+{
+    HashState *hash_state = innerPlanState(hj_state); 
+
+    Plan *nl_plan = nl_state->js.ps.plan; 
+    Plan *hj_plan = hj_state->js.ps.plan; 
+    Plan *hash_plan = hash_state->ps.plan; 
+
+    outerPlan(hj_plan) = outerPlan(nl_plan); 
+    outerPlan(hash_plan) = innerPlan(nl_plan); 
+
+    outerPlanState(hj_state) = outerPlanState(nl_state); 
+    outerPlanState(hash_state) = innerPlanState(nl_state); 
+}
+
+/* TODO: right now we only copy joinclauses to hashcluases, which may not work all the time */
+static List*
+ExtractHashClauses(List *joinclauses)
+{
+    List	   *hashclauses = NIL;
+    ListCell   *l;
+    
+    foreach(l, joinclauses)
+    {
+        Expr *expr = (Expr *) lfirst(l);
+
+        hashclauses = lappend(hashclauses, expr);
+    }
+
+    return hashclauses;  
+}
+
+static List*
+ExtractNonHashClauses(List *joinclauses)
+{
+   return NULL;  
 }
 

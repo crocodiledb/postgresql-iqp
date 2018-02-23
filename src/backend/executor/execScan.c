@@ -421,8 +421,6 @@ ExecScanInc(ScanState *node,
 	ExprState  *qual;
 	ProjectionInfo *projInfo;
 
-    int trigger_computation = node->ps.ps_IncInfo->trigger_computation; 
-
 	/*
 	 * Fetch data from node
 	 */
@@ -456,7 +454,7 @@ ExecScanInc(ScanState *node,
                     else
                     {
                         slot = ExecClearTuple(node->ss_ScanTupleSlot);
-                        MarkTupComplete(slot, false);
+                        //MarkTupComplete(slot, false);
                     }
                 }
 
@@ -467,7 +465,7 @@ ExecScanInc(ScanState *node,
                 if (TupIsNull(slot))
                 {
                     slot = ExecClearTuple(node->ss_ScanTupleSlot);
-                    MarkTupComplete(slot, true);
+                    //MarkTupComplete(slot, true);
                 }
             }
             else
@@ -523,10 +521,11 @@ ExecScanInc(ScanState *node,
                 else
                     slot = ExecClearTuple(node->ss_ScanTupleSlot);
 
-                if (node->incProcState == PROC_NORM_BATCH)
+                /*if (node->incProcState == PROC_NORM_BATCH)
                     MarkTupComplete(slot, false); 
-                else                                /* PROC_INC_DELTA */
+                else                                //PROC_INC_DELTA
                     MarkTupComplete(slot, true); 
+                */
 
                 return slot; 
             }

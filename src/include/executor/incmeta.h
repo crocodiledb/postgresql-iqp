@@ -55,7 +55,7 @@ extern void ReScanScanInc(ScanState *node);
  * prototypes from functions in executor/nodeNestloopInc.c
  * */
 
-extern void ExecInitNestLoopInc(NestLoopState *node); 
+extern void ExecInitNestLoopInc(NestLoopState *node, int eflags); 
 
 extern TupleTableSlot * ExecNestLoopInc(PlanState *pstate); 
 

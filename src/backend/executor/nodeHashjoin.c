@@ -406,19 +406,6 @@ ExecInitHashJoin(HashJoin *node, EState *estate, int eflags)
 	hjstate->js.ps.plan = (Plan *) node;
 	hjstate->js.ps.state = estate; 
 
-    /*
-     * totem: incremental hash join or not  
-     */
-    if (estate->es_incremental && estate->es_isSelect) 
-    {
-        ExecInitHashJoinInc(hjstate);
-        hjstate->js.ps.ExecProcNode = ExecHashJoinInc;
-    } 
-    else 
-    {
-        hjstate->js.ps.ExecProcNode = ExecHashJoin;
-    }
-
 	/*
 	 * Miscellaneous initialization
 	 *
@@ -447,7 +434,15 @@ ExecInitHashJoin(HashJoin *node, EState *estate, int eflags)
 	outerNode = outerPlan(node);
 	hashNode = (Hash *) innerPlan(node);
 
-	outerPlanState(hjstate) = ExecInitNode(outerNode, estate, eflags);
+    if (estate->leftChildExist)
+    {
+        outerPlanState(hjstate) = estate->tempLeftPS;
+        estate->leftChildExist = false; 
+    }
+    else
+    {
+        outerPlanState(hjstate) = ExecInitNode(outerNode, estate, eflags);
+    }
 	innerPlanState(hjstate) = ExecInitNode((Plan *) hashNode, estate, eflags);
 
 	/*
@@ -554,6 +549,19 @@ ExecInitHashJoin(HashJoin *node, EState *estate, int eflags)
 	hjstate->hj_JoinState = HJ_BUILD_HASHTABLE;
 	hjstate->hj_MatchedOuter = false;
 	hjstate->hj_OuterNotEmpty = false;
+
+    /*
+     * totem: incremental hash join or not  
+     */
+    if (estate->es_incremental && estate->es_isSelect) 
+    {
+        ExecInitHashJoinInc(hjstate);
+        hjstate->js.ps.ExecProcNode = ExecHashJoinInc;
+    } 
+    else 
+    {
+        hjstate->js.ps.ExecProcNode = ExecHashJoin;
+    }
 
 	return hjstate;
 }

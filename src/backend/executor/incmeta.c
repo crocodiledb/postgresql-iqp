@@ -109,7 +109,13 @@ ExecIncStart(EState *estate, PlanState *ps)
             Relation r = estate->reader_ss[i]->ss_currentRelation; 
             (void) AddIncTQReader(tq_pool, r, RelationGetDescr(r)); 
         }
-        estate->tq_pool = tq_pool;  
+        estate->tq_pool = tq_pool; 
+
+        estate->numDelta = 1; 
+        estate->leftChildExist = false;
+        estate->rightChildExist = false; 
+        estate->tempLeftPS = NULL;
+        estate->tempRightPS = NULL; 
     }
     else /* Modification Command; Collect Writer */
     {

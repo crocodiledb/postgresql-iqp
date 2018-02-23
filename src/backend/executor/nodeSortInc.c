@@ -62,13 +62,13 @@ ExecSortInc(PlanState *pstate)
 
 	if (node->isEOF)
 	{
-        if (node->isComplete) 
-        {
-	        slot = node->ss.ps.ps_ResultTupleSlot;
-            ExecClearTuple(slot); 
-            MarkTupComplete(slot, node->isComplete); 
-            return slot; 
-        }
+       // if (node->isComplete) 
+       // {
+	   //     slot = node->ss.ps.ps_ResultTupleSlot;
+       //     ExecClearTuple(slot); 
+       //     MarkTupComplete(slot, node->isComplete); 
+       //     return slot; 
+       // }
         
 		Sort	   *plannode = (Sort *) node->ss.ps.plan;
 		PlanState  *outerNode;
@@ -116,10 +116,10 @@ ExecSortInc(PlanState *pstate)
 			slot = ExecProcNode(outerNode);
 
 			if (TupIsNull(slot)) 
-            {
-                node->isComplete = TupIsComplete(slot);
+            //{
+            //    node->isComplete = TupIsComplete(slot);
 				break;
-            }
+            //}
 
 			tuplesort_puttupleslot(tuplesortstate, slot);
 		}
@@ -158,7 +158,7 @@ ExecSortInc(PlanState *pstate)
 
     if (TupIsNull(slot)) {
         node->isEOF = true;
-        MarkTupComplete(slot, node->isComplete);
+        //MarkTupComplete(slot, node->isComplete);
     }
 
 	return slot;

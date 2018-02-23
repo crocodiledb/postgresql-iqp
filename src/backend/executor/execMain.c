@@ -276,6 +276,7 @@ standard_ExecutorStart(QueryDesc *queryDesc, int eflags)
     /*
      * totem: initialize IncInfo 
      */
+    estate->numDelta = 0; 
     if (estate->es_incremental) 
         ExecIncStart(estate, queryDesc->planstate); 
 
@@ -1749,12 +1750,12 @@ ExecutePlan(EState *estate,
 		 * process so we just end the loop...
 		 */
         /*
-         * totem: We add a "iscomplete" state to indicate whether we should 
+         * totem: We add numDelta to indicate whether we should 
          * complete the query processing or not 
          */
 		if (TupIsNull(slot)) 
         {
-            if (TupIsComplete(slot)) 
+            if (estate->numDelta == 0) 
             {
                 if (estate->es_incremental && estate->es_isSelect)
                 {
@@ -1767,17 +1768,15 @@ ExecutePlan(EState *estate,
             } 
             else 
             {
-                if (estate->es_incremental && estate->es_isSelect) 
-                {
+                /* es_incremental and es_isSelect must be true */
+                estate->numDelta--; 
 
-                    gettimeofday(&end , NULL);
-                    estate->batchTime = GetTimeDiff(start, end); 
+                gettimeofday(&end , NULL);
+                estate->batchTime = GetTimeDiff(start, end); 
 
-                    ExecIncRun(estate, planstate); 
-                     
-                    gettimeofday(&start , NULL);
+                ExecIncRun(estate, planstate);      
+                gettimeofday(&start , NULL);
                    
-                }
                 continue;
             }
         }

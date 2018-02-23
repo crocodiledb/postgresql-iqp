@@ -6,7 +6,7 @@ DELTA_HOME=/home/totemtang/IQP/postgresql/pg_scripts/tpch_delta
 INC=on
 dm=topdown
 
-for query in q5
+for query in q9
 do
    for dm in dp 
    do 

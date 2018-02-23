@@ -282,15 +282,6 @@ ExecInitNestLoop(NestLoop *node, EState *estate, int eflags)
 	nlstate->js.ps.plan = (Plan *) node;
 	nlstate->js.ps.state = estate;
 
-    /* totem */
-    if (estate->es_incremental && estate->es_isSelect)
-    {
-        ExecInitNestLoopInc(nlstate); 
-        nlstate->js.ps.ExecProcNode = ExecNestLoopInc;
-    }
-    else
-        nlstate->js.ps.ExecProcNode = ExecNestLoop;
-
 	/*
 	 * Miscellaneous initialization
 	 *
@@ -365,6 +356,15 @@ ExecInitNestLoop(NestLoop *node, EState *estate, int eflags)
 
 	NL1_printf("ExecInitNestLoop: %s\n",
 			   "node initialized");
+
+    /* totem */
+    if (estate->es_incremental && estate->es_isSelect)
+    {
+        ExecInitNestLoopInc(nlstate, eflags); 
+        nlstate->js.ps.ExecProcNode = ExecNestLoopInc;
+    }
+    else
+        nlstate->js.ps.ExecProcNode = ExecNestLoop;
 
 	return nlstate;
 }

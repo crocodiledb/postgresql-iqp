@@ -489,18 +489,20 @@ ExecHashJoinInc(PlanState *pstate)
     {
         result_slot = node->js.ps.ps_ProjInfo->pi_state.resultslot; 
         ExecClearTuple(result_slot);
+        /*
         if (node->hj_isComplete) 
         {
             MarkTupComplete(result_slot, true);
         }
         else 
         {
-            /* reset the states of hashjoin */
+            // reset the states of hashjoin
 			node->hj_OuterNotEmpty = false;
 			node->hj_JoinState = HJ_NEED_NEW_OUTER;
 
             MarkTupComplete(result_slot, false);
         }
+        */
         return result_slot; 
     }
 }

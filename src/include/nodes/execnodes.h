@@ -547,8 +547,13 @@ typedef struct EState
     bool             es_isSelect;
     IncTQPool        *tq_pool; 
     struct ScanState **reader_ss; 
-    struct ModifyTableState *writer_mt;  
-
+    struct ModifyTableState *writer_mt; 
+    int         numDelta;           /* totem: number of delta we may have 
+                                     *  (TODO: this is a temporary solution) */ 
+    bool       leftChildExist; 
+    bool       rightChildExist;
+    struct PlanState *tempLeftPS; 
+    struct PlanState *tempRightPS; 
 } EState;
 
 
@@ -1653,7 +1658,8 @@ typedef struct NestLoopState
 	JoinState	js;				/* its first field is NodeTag */
 	bool		nl_NeedNewOuter;
 	bool		nl_MatchedOuter;
-	TupleTableSlot *nl_NullInnerTupleSlot;
+	TupleTableSlot          *nl_NullInnerTupleSlot;
+    struct HashJoinState    *nl_hj;  
     bool        nl_isComplete;     /* totem: isComplete or not */
 } NestLoopState;
 

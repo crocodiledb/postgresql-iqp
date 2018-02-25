@@ -180,7 +180,7 @@ ExecNestLoopIncReal(PlanState *pstate)
     
                 /* totem: assign inner PlanState rescan state */
                 if (pstate->isDelta && node->nl_useHash && node->nl_hashBuild && incInfo->rightAction == PULL_BATCH_DELTA) 
-                    innerPlanState(pstate)->chgState = PROC_NORM_BATCH; 
+                    innerPlanState(pstate)->chgAction = PULL_BATCH; 
 
     			/*
     			 * now rescan the inner plan
@@ -316,7 +316,7 @@ ExecInitNestLoopInc(NestLoopState *node, int eflags)
     node->nl_useHash = true;
     node->nl_hashBuild = false;
     node->nl_JoinState = NL_NEEDOUTER; 
-    innerPlanState(node)->chgState = PROC_NORM_BATCH; 
+    innerPlanState(node)->chgAction = PULL_BATCH;  
 
     if (node->nl_useHash)
     {
@@ -390,29 +390,31 @@ ExecInitNestLoopDelta(NestLoopState * node)
 {
     IncInfo *incInfo = node->js.ps.ps_IncInfo; 
     node->js.ps.isDelta = true;
-    node->nl_JoinState = NL_NEEDOUTER; 
+    node->nl_JoinState = NL_NEEDOUTER;
+    
+    innerPlanState(node)->chgAction = incInfo->rightAction; 
 
-    if(node->nl_useHash) /* use hash */
-    {
-        if (!node->nl_hashBuild)
-        {
-            if (incInfo->rightAction == PULL_DELTA)
-                innerPlanState(node)->chgState = PROC_INC_DELTA; 
-            else
-                innerPlanState(node)->chgState = PROC_INC_BATCH; 
-        }
-        else /* is in delta processing, hash built, and need pull batch */
-        {
-            innerPlanState(node)->chgState = PROC_NORM_BATCH; 
-        }
-    }
-    else /* nest loop */
-    {
-        if (incInfo->rightAction == PULL_DELTA )
-            innerPlanState(node)->chgState = PROC_INC_DELTA; 
-        else
-            innerPlanState(node)->chgState = PROC_INC_BATCH;
-    }
+//    if(node->nl_useHash) /* use hash */
+//    {
+//        if (!node->nl_hashBuild)
+//        {
+//            if (incInfo->rightAction == PULL_DELTA)
+//                innerPlanState(node)->chgState = PROC_INC_DELTA; 
+//            else
+//                innerPlanState(node)->chgState = PROC_INC_BATCH; 
+//        }
+//        else /* is in delta processing, hash built, and need pull batch */
+//        {
+//            innerPlanState(node)->chgState = PROC_NORM_BATCH; 
+//        }
+//    }
+//    else /* nest loop */
+//    {
+//        if (incInfo->rightAction == PULL_DELTA )
+//            innerPlanState(node)->chgState = PROC_INC_DELTA; 
+//        else
+//            innerPlanState(node)->chgState = PROC_INC_BATCH;
+//    }
 
     PlanState *innerPlan; 
     PlanState *outerPlan; 

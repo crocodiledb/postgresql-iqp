@@ -421,6 +421,7 @@ ExecScanInc(ScanState *node,
 	ExprState  *qual;
 	ProjectionInfo *projInfo;
 
+    IncInfo *incInfo = node->ps.ps_IncInfo;
     bool isDelta = false; 
 
 	/*
@@ -443,14 +444,14 @@ ExecScanInc(ScanState *node,
         TupleTableSlot *slot;
         for (;;)
         {
-            if (node->incProcState == PROC_NORM_BATCH || node->incProcState == PROC_INC_BATCH)
+            if (incInfo->leftAction == PULL_BATCH || incInfo->leftAction == PULL_BATCH_DELTA)
             {
                 slot = ExecScanFetch(node, accessMtd, recheckMtd); 
                 if (TupIsNull(slot))
                 {
-                    if (node->incProcState == PROC_INC_BATCH)
+                    if (incInfo->leftAction == PULL_BATCH_DELTA)
                     {
-                        node->incProcState = PROC_INC_DELTA; 
+                        incInfo->leftAction = PULL_DELTA; 
                         continue;
                     }
                     else
@@ -461,7 +462,7 @@ ExecScanInc(ScanState *node,
                 }
 
             }
-            else if (node->incProcState == PROC_INC_DELTA)
+            else if (incInfo->leftAction == PULL_DELTA)
             {
                 slot = FetchScanInc(node); 
                 MarkTupDelta(slot, true); 
@@ -473,7 +474,7 @@ ExecScanInc(ScanState *node,
             }
             else
             {
-                elog(ERROR, "IncProcState %d not supported", node->incProcState); 
+                elog(ERROR, "PullAction %d not supported", incInfo->leftAction); 
             }
 
             return slot; 
@@ -496,15 +497,15 @@ ExecScanInc(ScanState *node,
 		TupleTableSlot *slot;
 
             
-        if (node->incProcState == PROC_NORM_BATCH || node->incProcState == PROC_INC_BATCH)
+        if (incInfo->leftAction == PULL_BATCH || incInfo->leftAction == PULL_BATCH_DELTA)
             slot = ExecScanFetch(node, accessMtd, recheckMtd);
-        else if (node->incProcState == PROC_INC_DELTA) 
+        else if (incInfo->leftAction == PULL_DELTA) 
         {
             isDelta = true; 
             slot = FetchScanInc(node); 
         }
         else
-            elog(ERROR, "IncProcState %d not supported", node->incProcState); 
+            elog(ERROR, "PullAction %d not supported", incInfo->leftAction); 
 
     	/*
     	 * if the slot returned by the accessMtd contains NULL, then it means
@@ -514,9 +515,9 @@ ExecScanInc(ScanState *node,
     	 */
     	if (TupIsNull(slot))
     	{
-            if (node->incProcState == PROC_INC_BATCH) 
+            if (incInfo->leftAction == PULL_BATCH_DELTA) 
             {
-                node->incProcState = PROC_INC_DELTA; 
+                incInfo->leftAction = PULL_DELTA; 
 	            ResetExprContext(econtext);
                 continue;
             }
@@ -592,8 +593,7 @@ ExecScanInc(ScanState *node,
  */
 void
 InitScanInc(ScanState *node) 
-{
-    node->incProcState = PROC_NORM_BATCH; 
+{ 
     node->tq_reader = NULL; 
 } 
 
@@ -607,10 +607,10 @@ EndScanInc(ScanState *node)
 void 
 ReScanScanInc(ScanState *node)
 {
-    node->incProcState = node->ps.chgState; 
-    if (node->incProcState != PROC_NORM_BATCH ) /* Not in Batch Processing*/ 
+    IncInfo *incInfo = node->ps.ps_IncInfo;
+    incInfo->leftAction = node->ps.chgAction; 
+    if (incInfo->leftAction != PULL_BATCH ) /* Not in Batch Processing*/ 
     {
-        IncInfo *incInfo = node->ps.ps_IncInfo;
         IncTQPool *tq_pool = node->ps.state->tq_pool; 
 
         node->tq_reader = GetTQReader(tq_pool, node->ss_currentRelation, node->tq_reader); /* Take a new snapshot (i.e. reset) */

@@ -45,12 +45,14 @@ typedef enum IncState
 
 /*
  * PullAction
+ *      PULL_BATCH: only pull batch data
  *      PULL_DELTA: only pull delta data 
  *      PULL_BATCH_DELTA: pull both batch and delta data 
  */
 
 typedef enum PullAction 
 {
+    PULL_BATCH,
     PULL_DELTA,
     PULL_BATCH_DELTA
 } PullAction; 
@@ -90,7 +92,6 @@ typedef struct IncInfo {
     /* Pull actions  */
     PullAction leftAction; 
     PullAction rightAction; 
-    PullAction parentAction; 
 
     /* IncState */
     IncState leftIncState; 

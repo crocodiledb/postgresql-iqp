@@ -1800,13 +1800,7 @@ void
 ExecInitIndexScanDelta(IndexScanState * node)
 {
     IncInfo *incInfo = node->ss.ps.ps_IncInfo; 
+    node->ss.ps.chgAction = incInfo->leftAction; 
     if (incInfo->leftAction == PULL_BATCH_DELTA) 
-    {
-        node->ss.incProcState = PROC_INC_BATCH; 
         ExecReScanIndexScan(node);
-    }
-    else
-    {
-        node->ss.incProcState = PROC_INC_DELTA; 
-    }
 }

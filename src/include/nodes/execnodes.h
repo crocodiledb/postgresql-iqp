@@ -927,7 +927,7 @@ typedef struct PlanState
 	ProjectionInfo *ps_ProjInfo;	/* info for doing tuple projection */
 
     IncInfo *ps_IncInfo;            /* totem: info struct for incremental processing */
-    IncProcState chgState;          /* totem: used by Rescan */
+    PullAction chgAction;           /* totem: used by Rescan */
     bool    isDelta;                /* totem: is in delta processing */
 } PlanState;
 
@@ -1154,7 +1154,6 @@ typedef struct ScanState
 	HeapScanDesc        ss_currentScanDesc;
 	TupleTableSlot      *ss_ScanTupleSlot;
     IncTupQueueReader   *tq_reader; /* totem: memory buffer to hold delta data */
-    IncProcState        incProcState; 
 } ScanState;
 
 /* ----------------

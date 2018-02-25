@@ -318,9 +318,8 @@ ExecInitIncInfoHelper(PlanState *ps, IncInfo *parent, int *count, int *leafCount
 
     incInfo->trigger_computation = -1;  
 
-    incInfo->parentAction = PULL_DELTA;
-    incInfo->leftAction = PULL_DELTA;
-    incInfo->rightAction = PULL_DELTA; 
+    incInfo->leftAction = PULL_BATCH;
+    incInfo->rightAction = PULL_BATCH; 
 
     incInfo->leftIncState = STATE_DROP;
     incInfo->rightIncState = STATE_DROP;
@@ -1193,7 +1192,7 @@ ExecDPAssignState (EState *estate, int i, int j, PullAction parentAction)
                 else
                     ExecDPAssignState(estate, right, j - bdMemLeft[i][j], bdRightPull[i][j]); 
             }
-            else /* Pull Delta */
+            else if (parentAction == PULL_DELTA) /* Pull Delta */
             {
                 incInfo->rightIncState = deltaIncState[i][j]; 
                 ExecDPAssignState(estate, left, deltaMemLeft[i][j], deltaLeftPull[i][j]); 
@@ -1201,6 +1200,10 @@ ExecDPAssignState (EState *estate, int i, int j, PullAction parentAction)
                     ExecDPAssignState(estate, right, j - incInfo->memory_cost - deltaMemLeft[i][j], deltaRightPull[i][j]); 
                 else
                     ExecDPAssignState(estate, right, j - deltaMemLeft[i][j], deltaRightPull[i][j]); 
+            }
+            else
+            {
+                elog(ERROR, "PULL_BATCH should exist"); 
             }
             estate->es_incState[incInfo->id] = incInfo->rightIncState; 
             break;
@@ -1216,10 +1219,14 @@ ExecDPAssignState (EState *estate, int i, int j, PullAction parentAction)
                 ExecDPAssignState(estate, left, bdMemLeft[i][j], bdLeftPull[i][j]); 
                 ExecDPAssignState(estate, right, j - bdMemLeft[i][j], bdRightPull[i][j]); 
             }
-            else /* Pull Delta */
+            else if (parentAction == PULL_DELTA) /* Pull Delta */
             {
                 ExecDPAssignState(estate, left, deltaMemLeft[i][j], deltaLeftPull[i][j]); 
                 ExecDPAssignState(estate, right, j - deltaMemLeft[i][j], deltaRightPull[i][j]); 
+            }
+            else
+            {
+                elog(ERROR, "PULL_BATCH should exist"); 
             }
             estate->es_incState[incInfo->id] = STATE_DROP;
             break;  
@@ -1228,8 +1235,10 @@ ExecDPAssignState (EState *estate, int i, int j, PullAction parentAction)
         case T_IndexScanState:
             if (parentAction == PULL_BATCH_DELTA)
                 incInfo->leftIncState = bdIncState[i][j];
-            else 
+            else if (parentAction == PULL_DELTA) 
                 incInfo->leftIncState = deltaIncState[i][j]; 
+            else
+                elog(ERROR, "PULL_BATCH should exist"); 
             estate->es_incState[incInfo->id] = incInfo->leftIncState; 
             break; 
 
@@ -1240,10 +1249,14 @@ ExecDPAssignState (EState *estate, int i, int j, PullAction parentAction)
                 incInfo->leftIncState = bdIncState[i][j]; 
                 ExecDPAssignState(estate, left, bdMemLeft[i][j], bdLeftPull[i][j]); 
             }
-            else /* Pull Delta */
+            else if (parentAction == PULL_DELTA) /* Pull Delta */
             {
                 incInfo->leftIncState = deltaIncState[i][j]; 
                 ExecDPAssignState(estate, left, deltaMemLeft[i][j], deltaLeftPull[i][j]); 
+            }
+            else
+            {
+                elog(ERROR, "PULL_BATCH should exist"); 
             }
             estate->es_incState[incInfo->id] = incInfo->leftIncState; 
             break; 
@@ -1407,7 +1420,8 @@ ExecGenPullAction(IncInfo *incInfo)
 static void
 ExecGenPullActionHelper(IncInfo *incInfo, PullAction parentAction)
 {
-    incInfo->parentAction = parentAction; 
+    incInfo->leftAction = PULL_DELTA; 
+    incInfo->rightAction = PULL_DELTA; 
 
     if (incInfo->lefttree == NULL && incInfo->righttree == NULL) /* Scan operator */
     {
@@ -1429,7 +1443,7 @@ ExecGenPullActionHelper(IncInfo *incInfo, PullAction parentAction)
 
             case T_SortState:
                 if (parentAction == PULL_BATCH_DELTA && incInfo->leftIncState == STATE_DROP) 
-                    incInfo->leftAction = PULL_BATCH_DELTA; 
+                    incInfo->leftAction = PULL_BATCH_DELTA;
                 break; 
 
             default:

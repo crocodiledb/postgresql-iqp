@@ -421,6 +421,8 @@ ExecScanInc(ScanState *node,
 	ExprState  *qual;
 	ProjectionInfo *projInfo;
 
+    bool isDelta = false; 
+
 	/*
 	 * Fetch data from node
 	 */
@@ -462,6 +464,7 @@ ExecScanInc(ScanState *node,
             else if (node->incProcState == PROC_INC_DELTA)
             {
                 slot = FetchScanInc(node); 
+                MarkTupDelta(slot, true); 
                 if (TupIsNull(slot))
                 {
                     slot = ExecClearTuple(node->ss_ScanTupleSlot);
@@ -495,8 +498,11 @@ ExecScanInc(ScanState *node,
             
         if (node->incProcState == PROC_NORM_BATCH || node->incProcState == PROC_INC_BATCH)
             slot = ExecScanFetch(node, accessMtd, recheckMtd);
-        else if (node->incProcState == PROC_INC_DELTA)
+        else if (node->incProcState == PROC_INC_DELTA) 
+        {
+            isDelta = true; 
             slot = FetchScanInc(node); 
+        }
         else
             elog(ERROR, "IncProcState %d not supported", node->incProcState); 
 
@@ -554,13 +560,16 @@ ExecScanInc(ScanState *node,
 				 * Form a projection tuple, store it in the result tuple slot
 				 * and return it.
 				 */
-				return ExecProject(projInfo);
+                TupleTableSlot *retslot = ExecProject(projInfo);
+                MarkTupDelta(retslot, isDelta); 
+                return retslot;
 			}
 			else
 			{
 				/*
 				 * Here, we aren't projecting, so just return scan tuple.
 				 */
+                MarkTupDelta(slot, isDelta); 
 				return slot;
 			}
 		}
@@ -598,17 +607,13 @@ EndScanInc(ScanState *node)
 void 
 ReScanScanInc(ScanState *node)
 {
+    node->incProcState = node->ps.chgState; 
     if (node->incProcState != PROC_NORM_BATCH ) /* Not in Batch Processing*/ 
     {
         IncInfo *incInfo = node->ps.ps_IncInfo;
         IncTQPool *tq_pool = node->ps.state->tq_pool; 
 
         node->tq_reader = GetTQReader(tq_pool, node->ss_currentRelation, node->tq_reader); /* Take a new snapshot (i.e. reset) */
-
-        if (incInfo->leftAction == PULL_BATCH_DELTA) 
-            node->incProcState = PROC_INC_BATCH; 
-        else
-            node->incProcState = PROC_INC_DELTA; 
     }
 }
 

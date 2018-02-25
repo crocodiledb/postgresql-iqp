@@ -14,7 +14,8 @@
 
 #include "nodes/execnodes.h"
 #include "executor/executor.h"
-#include "executor/incinfo.h"
+#include "executor/incinfo.h" 
+
 
 extern bool enable_incremental;
 extern int  memory_budget;
@@ -22,20 +23,22 @@ extern DecisionMethod decision_method;
 
 
 /*
- * MarkTupComplete -- mark a tuple complete or not
- */
+ * We need to define several states used by TupleTableSlot
+ * */
+#define TTS_COMPLETE 0x1
+#define TTS_DELTA 0x2
 
 #define MarkTupComplete(slot, iscomplete) \
-    ((slot)->tts_iscomplete = iscomplete) 
+    ((slot)->tts_inc_state = (iscomplete ? ((slot)->tts_inc_state|TTS_COMPLETE) : ((slot)->tts_inc_state & ~TTS_COMPLETE)))
 
-/*
- * TupIsComplete -- does a TupleTableSlot indicate completion ? 
- * Note that a NULL slot indicates complete
- */
+#define MarkTupDelta(slot, isdelta) \
+    ((slot)->tts_inc_state = (isdelta ? ((slot)->tts_inc_state|TTS_DELTA) : ((slot)->tts_inc_state & ~TTS_DELTA)))
 
 #define TupIsComplete(slot) \
-    ((slot) == NULL || (slot)->tts_iscomplete) 
+    ((slot) == NULL || ((slot)->tts_inc_state & TTS_COMPLETE) != 0)
 
+#define TupIsDelta(slot) \
+    (((slot)->tts_inc_state & TTS_DELTA) != 0)
 
 /*
  * prototypes from functions in executor/execScan.c

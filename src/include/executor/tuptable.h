@@ -125,9 +125,9 @@ typedef struct TupleTableSlot
 	Datum	   *tts_values;		/* current per-attribute values */
 	bool	   *tts_isnull;		/* current per-attribute isnull flags */
 	MinimalTuple tts_mintuple;	/* minimal tuple, or NULL if none */
-    bool        tts_iscomplete; /* totem: add one state indicating complete or not*/
 	HeapTupleData tts_minhdr;	/* workspace for minimal-tuple-only case */
 	long		tts_off;		/* saved state for slot_deform_tuple */
+    int         tts_inc_state;  /* totem: states for inc */
 } TupleTableSlot;
 
 #define TTS_HAS_PHYSICAL_TUPLE(slot) \ 

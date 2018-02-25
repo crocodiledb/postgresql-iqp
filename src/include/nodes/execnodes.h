@@ -927,6 +927,8 @@ typedef struct PlanState
 	ProjectionInfo *ps_ProjInfo;	/* info for doing tuple projection */
 
     IncInfo *ps_IncInfo;            /* totem: info struct for incremental processing */
+    IncProcState chgState;          /* totem: used by Rescan */
+    bool    isDelta;                /* totem: is in delta processing */
 } PlanState;
 
 /* ----------------
@@ -1659,8 +1661,10 @@ typedef struct NestLoopState
 	bool		nl_NeedNewOuter;
 	bool		nl_MatchedOuter;
 	TupleTableSlot          *nl_NullInnerTupleSlot;
-    struct HashJoinState    *nl_hj;  
-    bool        nl_isComplete;     /* totem: isComplete or not */
+    struct HashJoinState    *nl_hj; 
+    int         nl_JoinState;  
+    bool        nl_useHash;        /* totem: use hash join for delta or not */
+    bool        nl_hashBuild;      /* totem: is hash built or not ? */
 } NestLoopState;
 
 /* ----------------

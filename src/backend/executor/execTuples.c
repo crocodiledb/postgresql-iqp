@@ -123,8 +123,8 @@ MakeTupleTableSlot(void)
 	slot->tts_nvalid = 0;
 	slot->tts_values = NULL;
 	slot->tts_isnull = NULL;
-    slot->tts_iscomplete = true;
 	slot->tts_mintuple = NULL;
+    slot->tts_inc_state = 0; 
 
 	return slot;
 }
@@ -473,9 +473,9 @@ ExecClearTuple(TupleTableSlot *slot)	/* slot in which to store tuple */
 	slot->tts_nvalid = 0; 
 
     /*
-     * totem: Reset iscomplete to true
+     * totem: Reset inc state
      * */
-    slot->tts_iscomplete = true;
+    slot->tts_inc_state = 0; 
 
 	return slot;
 }

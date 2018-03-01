@@ -458,7 +458,16 @@ standard_ExecutorFinish(QueryDesc *queryDesc)
 		InstrStopNode(queryDesc->totaltime, 0);
 
     if (estate->es_incremental)
-        ExecIncFinish(estate, queryDesc->planstate); 
+        ExecIncFinish(estate, queryDesc->planstate);
+    else
+    {
+        estate->es_statFile = fopen("statbatch.txt", "a"); 
+        FILE *statFile = estate->es_statFile;
+        fprintf(statFile, "%.2f\n", \
+                estate->repairTime); 
+        fclose(estate->es_statFile); 
+
+    } 
 
 	MemoryContextSwitchTo(oldcontext);
 
@@ -1758,6 +1767,11 @@ ExecutePlan(EState *estate,
             if (estate->numDelta == 0) 
             {
                 if (estate->es_incremental && estate->es_isSelect)
+                {
+                    gettimeofday(&end , NULL);
+                    estate->repairTime = GetTimeDiff(start, end);  
+                }
+                else if (!estate->es_incremental)
                 {
                     gettimeofday(&end , NULL);
                     estate->repairTime = GetTimeDiff(start, end);  

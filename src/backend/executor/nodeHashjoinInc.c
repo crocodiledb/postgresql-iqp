@@ -30,6 +30,7 @@
 #define HJ_FILL_INNER_TUPLES	5
 #define HJ_TRIGGER_COMPUTE		6
 #define HJ_END_JOIN     		7
+#define HJ_ADD_DELTA_HASHTABLE  8
 
 /* Returns true if doing null-fill on outer relation */
 #define HJ_FILL_OUTER(hjstate)	((hjstate)->hj_NullInnerTupleSlot != NULL)
@@ -407,6 +408,46 @@ ExecHashJoinReal(PlanState *pstate)
 
                 break;
 
+            case HJ_ADD_DELTA_HASHTABLE:
+                Assert(hashtable != NULL); 
+            
+            	PlanState  *hashOuterNode;
+            	List	   *hashkeys;
+            	ExprContext *hashecontext;
+            
+            	/*
+            	 * get state info from hashNode
+            	 */
+            	hashOuterNode = outerPlanState(hashNode);
+            
+            	/*
+            	 * set expression context
+            	 */
+            	hashkeys = hashNode->hashkeys;
+            	hashecontext = hashNode->ps.ps_ExprContext;
+
+                for (;;) 
+                {		
+                    slot = ExecProcNode(hashOuterNode);
+		            if (TupIsNull(slot))
+                    {
+                        node->hj_JoinState = HJ_NEED_NEW_OUTER; 
+			            break;
+                    }
+                	/* We have to compute the hash value annd insert the tuple */
+                	econtext->ecxt_innertuple = slot;
+                	if (ExecHashGetHashValue(hashtable, hashecontext, hashkeys,
+                							 false, hashtable->keepNulls,
+            	    						 &hashvalue))
+            	    {
+            		    /* No skew optimization, so insert normally */
+            		    ExecHashTableInsert(hashtable, slot, hashvalue);
+            		    hashtable->totalTuples += 1;
+            	    }
+                }
+
+                break; 
+
 			default:
 				elog(ERROR, "unrecognized hashjoin state: %d",
 					 (int) node->hj_JoinState);
@@ -547,7 +588,12 @@ ExecResetHashJoinState(HashJoinState * node)
     else /* keep in main memory */
     {
 		node->hj_OuterNotEmpty = false;
-		node->hj_JoinState = HJ_NEED_NEW_OUTER;
+        if (incInfo->rightAction == PULL_DELTA)
+            node->hj_JoinState = HJ_ADD_DELTA_HASHTABLE; 
+        else if (incInfo->rightAction == PULL_NOTHING)
+            node->hj_JoinState = HJ_NEED_NEW_OUTER;
+        else
+            elog(ERROR, "Pull Action %d Not Possible", incInfo->rightAction); 
     }
 
     PlanState *innerPlan; 

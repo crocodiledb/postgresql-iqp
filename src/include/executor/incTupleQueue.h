@@ -19,7 +19,7 @@
 #define SHM_SIZE 10*1024*1024
 
 #define GEN_TQ_KEY(r) \
-    ((key_t)(r->rd_node.relNode))
+    ((key_t)(r->rd_id))
 
 
 typedef struct shm_tq {

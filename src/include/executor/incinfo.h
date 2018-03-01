@@ -52,6 +52,7 @@ typedef enum IncState
 
 typedef enum PullAction 
 {
+    PULL_NOTHING, 
     PULL_BATCH,
     PULL_DELTA,
     PULL_BATCH_DELTA

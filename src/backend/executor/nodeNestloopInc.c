@@ -205,18 +205,20 @@ ExecNestLoopIncReal(PlanState *pstate)
                     if (node->nl_hashBuild)
                         node->nl_JoinState = NL_HASHJOIN;
                     else
+                    {
                         node->nl_JoinState = NL_NEEDOUTER; 
 
-                    if (pstate->isDelta && node->nl_useHash)
-                    {
-                        node->nl_hashBuild = true; 
-                        FinalizeHashTable(hjstate); 
+                        if (pstate->isDelta && node->nl_useHash && hjstate->hj_HashTable != NULL)
+                        { 
+                            FinalizeHashTable(hjstate);
+                            node->nl_hashBuild = true; 
+                        }
                     }
                 }
                 else
                 {
                     node->nl_JoinState = NL_NLJOIN; 
-                    if (pstate->isDelta && node->nl_useHash && !node->nl_hashBuild && TupIsDelta(innerTupleSlot))
+                    if (TupIsDelta(innerTupleSlot) && pstate->isDelta && node->nl_useHash && !node->nl_hashBuild)
                         BuildHashTable(hjstate, innerTupleSlot); 
                 }
                 break; 
@@ -313,7 +315,7 @@ void
 ExecInitNestLoopInc(NestLoopState *node, int eflags)
 {
     node->js.ps.isDelta = false; 
-    node->nl_useHash = true;
+    node->nl_useHash = true; 
     node->nl_hashBuild = false;
     node->nl_JoinState = NL_NEEDOUTER; 
     innerPlanState(node)->chgAction = PULL_BATCH;  
@@ -530,15 +532,9 @@ BuildHashTable(HashJoinState *node, TupleTableSlot *slot)
         hashNode->hashtable = hashtable;
     }
 
-	PlanState  *outerNode;
 	List	   *hashkeys;
 	ExprContext *econtext;
 	uint32		hashvalue;
-
-	/*
-	 * get state info from hashNode
-	 */
-	outerNode = outerPlanState(hashNode);
 
 	/*
 	 * set expression context
@@ -569,6 +565,7 @@ FinalizeHashTable(HashJoinState *node)
 		hashtable->spacePeak = hashtable->spaceUsed;
 
     node->hj_JoinState = HJ_NEED_NEW_OUTER; 
+
 }
 
 static TupleTableSlot *
@@ -604,7 +601,16 @@ ProbeHashTable(HashJoinState *node, TupleTableSlot *outerTupleSlot)
     		case HJ_NEED_NEW_OUTER:
     
     			econtext->ecxt_outertuple = outerTupleSlot; 
-    
+
+                /* Compute Hash Value */
+                bool hashValid = ExecHashGetHashValue(hashtable, econtext,
+									 node->hj_OuterHashKeys,
+									 true,	/* outer tuple */
+									 false,
+									 &hashvalue); 
+                /* TODO: we do not consider the case where outertuple includes nulls */
+                Assert(hashValid); 
+
     			/*
     			 * Find the corresponding bucket for this tuple in the main
     			 * hash table or skew hash table.

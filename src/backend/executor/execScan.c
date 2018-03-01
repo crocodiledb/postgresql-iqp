@@ -609,7 +609,7 @@ ReScanScanInc(ScanState *node)
 {
     IncInfo *incInfo = node->ps.ps_IncInfo;
     incInfo->leftAction = node->ps.chgAction; 
-    if (incInfo->leftAction != PULL_BATCH ) /* Not in Batch Processing*/ 
+    if (incInfo->leftAction == PULL_DELTA || incInfo->leftAction == PULL_BATCH_DELTA ) /* Not in Batch Processing*/ 
     {
         IncTQPool *tq_pool = node->ps.state->tq_pool; 
 

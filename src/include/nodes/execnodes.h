@@ -33,7 +33,7 @@
 /*
  * totem: include IncInfo struct into PlanState
  */
-#include "executor/incExecDS.h"
+#include "executor/execTPCH.h"
 #include "executor/incinfo.h"
 #include "executor/incTQPool.h"
 #include "executor/incTupleQueue.h"
@@ -548,8 +548,10 @@ typedef struct EState
     IncTQPool        *tq_pool; 
     struct ScanState **reader_ss; 
     struct ModifyTableState *writer_mt; 
-    int         numDelta;           /* totem: number of delta we may have 
-                                     *  (TODO: this is a temporary solution) */ 
+
+    TPCH_Update *tpch_update; 
+    int          numDelta;           /* totem: number of delta we may have 
+                                      *  (TODO: this is a temporary solution) */ 
     bool       leftChildExist; 
     bool       rightChildExist;
     struct PlanState *tempLeftPS; 

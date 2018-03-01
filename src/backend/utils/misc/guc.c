@@ -95,6 +95,7 @@
  *
  */
 #include "executor/incmeta.h"
+#include "executor/execTPCH.h"
 
 #ifndef PG_KRB_SRVTAB
 #define PG_KRB_SRVTAB ""
@@ -3083,6 +3084,17 @@ static struct config_real ConfigureNamesReal[] =
 
 static struct config_string ConfigureNamesString[] =
 {
+    /* totem: TPCH update string*/
+    {
+        {"tpch_updates", PGC_USERSET, UNGROUPED,
+            gettext_noop("Set TPC-H Updates"),
+            NULL
+        },
+        &tables_with_update,
+        "lineitem",
+        NULL, NULL, NULL
+    },
+
 	{
 		{"archive_command", PGC_SIGHUP, WAL_ARCHIVING,
 			gettext_noop("Sets the shell command that will be called to archive a WAL file."),

@@ -19,14 +19,12 @@
 #include "executor/incinfo.h"
 #include "executor/incTupleQueue.h"
 #include "executor/incTQPool.h"
+#include "executor/execTPCH.h"
 
 #include "miscadmin.h"
 
 #define DELTA_COST 0
-
-#define LINEITEM_OID 26372
 #define DELTA_THRESHOLD 2
-#define GEN_DELTA_CMD "/home/totemtang/IQP/postgresql/pg_scripts/tpch_delta/gen_delta.sh"
 
 bool enable_incremental;
 int  memory_budget;     /* kB units*/
@@ -45,7 +43,8 @@ static void SortDPHasUpdate (EState *estate, int i, int j);
 static void SortDPNoUpdate (EState *estate, int i, int j); 
 static void AggDPHasUpdate (EState *estate, int i, int j); 
 static void AggDPNoUpdate (EState *estate, int i, int j); 
-static void HashJoinDPHasUpdate (EState *estate, int i, int j); 
+static void HashJoinDPLeftUpdate (EState *estate, int i, int j); 
+static void HashJoinDPRightUpdate (EState *estate, int i, int j); 
 static void HashJoinDPNoUpdate (EState *estate, int i, int j); 
 static void NestLoopDPHasUpdate (EState *estate, int i, int j); 
 static void NestLoopDPNoUpdate (EState *estate, int i, int j); 
@@ -111,6 +110,10 @@ ExecIncStart(EState *estate, PlanState *ps)
         }
         estate->tq_pool = tq_pool; 
 
+        /* Potential Updates of TPC-H */
+        TPCH_Update *update = BuildTPCHUpdate(tables_with_update);
+        estate->tpch_update = update; 
+
         estate->numDelta = 1; 
         estate->leftChildExist = false;
         estate->rightChildExist = false; 
@@ -134,9 +137,10 @@ ExecIncStart(EState *estate, PlanState *ps)
 }
 
 static 
-void ExecGenDelta()
+void ExecGenDelta(EState *estate)
 {
-    system(GEN_DELTA_CMD); 
+    TPCH_Update *update = estate->tpch_update;
+    GenTPCHUpdate(update); 
 }
 
 void 
@@ -161,7 +165,7 @@ ExecIncRun(EState *estate, PlanState *planstate)
         estate->decisionTime = GetTimeDiff(start, end);  
  
         /* An temp solution for generating delta*/
-        ExecGenDelta();
+        ExecGenDelta(estate);
 
         /* Wait for delta and mark delta */
         ExecWaitAndMarkDelta(estate, planstate); 
@@ -399,6 +403,8 @@ ExecMakeDecision (EState *estate, IncInfo *incInfo)
             qsort((void *)estate->es_incInfo, (size_t)estate->es_numIncInfo, sizeof(IncInfo *), MemComparator);
         ExecGreedyHelper(estate); 
     }
+    
+    ExecGenPullActionHelper(incInfo, PULL_BATCH_DELTA); 
 }
 
 static void
@@ -416,13 +422,14 @@ PrintStateDecision(EState *estate)
 static void 
 ExecEstimateDelta(EState *estate) 
 {
+    TPCH_Update *update = estate->tpch_update; 
     ScanState **reader_ss_array = estate->reader_ss; 
     ScanState *ss; 
 
     for (int i = 0; i < estate->es_numLeaf; i++)
     {
         ss = reader_ss_array[i]; 
-        if (ss->ss_currentRelation->rd_node.relNode == LINEITEM_OID)
+        if (CheckTPCHUpdate(update, GEN_TQ_KEY(ss->ss_currentRelation)))
             ss->ps.ps_IncInfo->leftUpdate = true; 
     }
 }
@@ -541,11 +548,13 @@ RunDPSolution(EState *estate)
 
                 case T_HashJoinState:
                     if (incInfo->leftUpdate && !incInfo->rightUpdate)
-                        incInfo->execDPNode = HashJoinDPHasUpdate; 
+                        incInfo->execDPNode = HashJoinDPLeftUpdate;
+                    else if (!incInfo->leftUpdate && incInfo->rightUpdate)
+                        incInfo->execDPNode = HashJoinDPRightUpdate;
                     else if (!incInfo->leftUpdate && !incInfo->rightUpdate)
                         incInfo->execDPNode = HashJoinDPNoUpdate; 
                     else 
-                        elog(ERROR, "We only support updates from the left most table"); 
+                        elog(ERROR, "We only support updates from a single table"); 
                     break;
                 case T_NestLoopState:
                     if (incInfo->leftUpdate && incInfo->rightUpdate)
@@ -981,7 +990,7 @@ NestLoopDPNoUpdate (EState *estate, int i, int j)
 
 
 static void
-HashJoinDPHasUpdate (EState *estate, int i, int j)
+HashJoinDPLeftUpdate (EState *estate, int i, int j)
 {    
     IncInfo   *incInfo = estate->es_incInfo[i]; 
 
@@ -1080,6 +1089,104 @@ HashJoinDPHasUpdate (EState *estate, int i, int j)
         bdRightPull[i][j] = PULL_BATCH_DELTA; 
     }
 
+}
+
+static void
+HashJoinDPRightUpdate (EState *estate, int i, int j)
+{
+    IncInfo   *incInfo = estate->es_incInfo[i]; 
+
+    int       **deltaCost = estate->es_deltaCost; 
+    IncState  **deltaIncState = estate->es_deltaIncState; 
+    int       **deltaMemLeft = estate->es_deltaMemLeft;
+    PullAction **deltaLeftPull = estate->es_deltaLeftPull; 
+    PullAction **deltaRightPull = estate->es_deltaRightPull; 
+
+    int       **bdCost = estate->es_bdCost;  
+    IncState  **bdIncState = estate->es_bdIncState; 
+    int       **bdMemLeft = estate->es_bdMemLeft;
+    PullAction **bdLeftPull = estate->es_bdLeftPull; 
+    PullAction **bdRightPull = estate->es_bdRightPull; 
+
+
+    int left = incInfo->lefttree->id;
+    int right = incInfo->righttree->id; 
+
+    int deltaDropCost = INT_MAX, bdDropCost = INT_MAX, bdKeepCost = INT_MAX; 
+
+    /* First, compute dropCost */
+    int tempCost;
+    int leftMem; 
+    int rightMem;  
+    int deltaDropMemLeft; 
+    int bdDropMemLeft; 
+    int k; 
+    for (k = 0; k <= j; k++)
+    {
+        leftMem = k;
+        rightMem = j - k; 
+
+        tempCost = bdCost[left][leftMem] + deltaCost[right][rightMem] + DELTA_COST; 
+        if (tempCost < deltaDropCost )
+        {
+            deltaDropCost = tempCost; 
+            deltaDropMemLeft = k;    
+        }
+
+        tempCost = bdCost[left][leftMem] + bdCost[right][rightMem] + incInfo->prepare_cost + incInfo->compute_cost + DELTA_COST; 
+        if (tempCost < bdDropCost)
+        {
+            bdDropCost = tempCost; 
+            bdDropMemLeft = k; 
+        }
+    }
+
+    deltaIncState[i][j] = STATE_DROP; /* always drop state for delta from right */
+    deltaCost[i][j] = deltaDropCost; 
+    deltaMemLeft[i][j] = deltaDropMemLeft;  
+    deltaLeftPull[i][j] = PULL_BATCH_DELTA; 
+    deltaRightPull[i][j] = PULL_DELTA; 
+
+    int bdKeepMemLeft; 
+    if (j == 0 || j < incInfo->memory_cost)   /* we can only drop the state */
+    {
+        bdIncState[i][j] = STATE_DROP;
+    }
+    else                            /* we need to considering keep it */ 
+    {
+        for (k = 0; k <= j - incInfo->memory_cost; k++)
+        {
+            leftMem = k;
+            rightMem = j - incInfo->memory_cost - k; 
+
+            tempCost = bdCost[left][leftMem] + deltaCost[right][rightMem] + incInfo->compute_cost + DELTA_COST; 
+            if (tempCost < bdKeepCost)
+            {
+                bdKeepCost = tempCost;
+                bdKeepMemLeft = k; 
+            }
+        }
+
+        if (bdKeepCost < bdDropCost)
+            bdIncState[i][j] = STATE_KEEPMEM; 
+        else
+            bdIncState[i][j] = STATE_DROP;
+    }
+        
+    if (bdIncState[i][j] == STATE_KEEPMEM)
+    {
+        bdCost[i][j] = bdKeepCost; 
+        bdMemLeft[i][j] = bdKeepMemLeft; 
+        bdLeftPull[i][j] = PULL_BATCH_DELTA; 
+        bdRightPull[i][j] = PULL_DELTA; 
+    }
+    else
+    {
+        bdCost[i][j] = bdDropCost; 
+        bdMemLeft[i][j] = bdDropMemLeft;  
+        bdLeftPull[i][j] = PULL_BATCH_DELTA; 
+        bdRightPull[i][j] = PULL_BATCH_DELTA; 
+    }
 }
 
 static void
@@ -1431,27 +1538,27 @@ ExecGenPullActionHelper(IncInfo *incInfo, PullAction parentAction)
     else if (incInfo->righttree == NULL) /* Agg or Sort operator */
     {
         switch (incInfo->ps->type) 
-        {
-            case T_AggState:
-                /* 
+        { 
+            case T_AggState:                                                                   
+                /*                                                                                   
                  * TODO: right now, we always return the whole aggregation results; 
-                 *       we will fix it later when we support negation 
-                 */
-                if (incInfo->leftIncState == STATE_DROP) 
-                    incInfo->leftAction = PULL_BATCH_DELTA; 
-                break; 
-
-            case T_SortState:
-                if (parentAction == PULL_BATCH_DELTA && incInfo->leftIncState == STATE_DROP) 
+                 *       we will fix it later when we support negation                  
+                 */ 
+                if (incInfo->leftIncState == STATE_DROP)
                     incInfo->leftAction = PULL_BATCH_DELTA;
-                break; 
 
-            default:
+                break;                                                                               
+                                                                                                      
+            case T_SortState:                                                                        
+                if (parentAction == PULL_BATCH_DELTA && incInfo->leftIncState == STATE_DROP)
+                    incInfo->leftAction = PULL_BATCH_DELTA;
+
+                break;                                                                               
+                                                                                                      
+            default:                                                                                 
                 elog(ERROR, "unsupported node type except sort and aggregate");
-                return; 
+                return;                                                                              
         }
-        
-        ExecGenPullActionHelper(incInfo->lefttree, incInfo->leftAction); 
     }
     else if (incInfo->lefttree == NULL)
     {
@@ -1462,22 +1569,33 @@ ExecGenPullActionHelper(IncInfo *incInfo, PullAction parentAction)
         if (parentAction == PULL_BATCH_DELTA) 
         {
             if (incInfo->leftIncState == STATE_DROP)
-                incInfo->leftAction = PULL_BATCH_DELTA; 
+                incInfo->leftAction = PULL_BATCH_DELTA;
  
             if (incInfo->rightIncState == STATE_DROP)
                 incInfo->rightAction = PULL_BATCH_DELTA;
         } 
-        else /* only need delta */ 
+        else if (parentAction == PULL_DELTA) /* only need delta */ 
         {
             if (incInfo->leftUpdate && incInfo->rightIncState == STATE_DROP) 
                 incInfo->rightAction = PULL_BATCH_DELTA;
+
             if (incInfo->rightUpdate && incInfo->leftIncState == STATE_DROP) 
                 incInfo->leftAction = PULL_BATCH_DELTA;
         }
-
-        ExecGenPullActionHelper(incInfo->lefttree, incInfo->leftAction); 
-        ExecGenPullActionHelper(incInfo->righttree, incInfo->rightAction); 
     }
+
+    if ((!incInfo->leftUpdate && incInfo->leftAction == PULL_DELTA) || parentAction == PULL_NOTHING)
+            incInfo->leftAction = PULL_NOTHING;
+        
+    if ((!incInfo->rightUpdate && incInfo->rightAction == PULL_DELTA) || parentAction == PULL_NOTHING)
+            incInfo->rightAction = PULL_NOTHING; 
+
+    if (incInfo->lefttree != NULL) 
+        ExecGenPullActionHelper(incInfo->lefttree, incInfo->leftAction); 
+
+    if (incInfo->righttree != NULL)
+        ExecGenPullActionHelper(incInfo->righttree, incInfo->rightAction); 
+
 }
 
 static bool 

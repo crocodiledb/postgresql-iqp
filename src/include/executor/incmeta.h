@@ -14,13 +14,10 @@
 
 #include "nodes/execnodes.h"
 #include "executor/executor.h"
-#include "executor/incinfo.h" 
-
 
 extern bool enable_incremental;
 extern int  memory_budget;
-extern DecisionMethod decision_method; 
-
+extern bool use_sym_hashjoin; 
 
 /*
  * We need to define several states used by TupleTableSlot
@@ -66,7 +63,7 @@ extern TupleTableSlot * ExecNestLoopInc(PlanState *pstate);
  * prototypes from functions in executor/nodeHashjoinInc.c
  */
 
-extern void ExecInitHashJoinInc(HashJoinState *hjstate); 
+extern void ExecInitHashJoinInc(HashJoinState *hjstate, EState *estate, int eflags); 
 
 extern TupleTableSlot * ExecHashJoinInc(PlanState *pstate);
 
@@ -126,6 +123,8 @@ extern void ExecResetAggState(AggState * node);
 
 extern void ExecResetSortState(SortState * node); 
 
+extern void ExecResetMaterialIncState(MaterialState * node);
+
 /*
  * prototypes from functions for ExecInitDelta
  */
@@ -143,16 +142,35 @@ extern void ExecInitAggDelta(AggState * node);
 
 extern void ExecInitSortDelta(SortState * node); 
 
+extern void ExecInitMaterialIncDelta(MaterialState *node); 
+
 /*
  * prototypes for getting memory cost
  */
-extern int ExecHashJoinMemoryCost(HashJoinState * node); 
+extern int ExecHashJoinMemoryCost(HashJoinState * node, bool estimate, bool right); 
+extern int ExecEstimateHashTableSize(double ntuples, int tupwidth); 
 
 //extern void ExecInitMergeJoinDelta(MergeJoinState * node); 
 
-extern int ExecAggMemoryCost(AggState * node); 
+extern int ExecAggMemoryCost(AggState * node, bool estimate); 
 
-extern int ExecSortMemoryCost(SortState * node); 
- 
+extern int ExecSortMemoryCost(SortState * node, bool estimate); 
+
+extern int ExecMaterialIncMemoryCost(MaterialState * node, bool estimate); 
+
+extern MaterialState *ExecBuildMaterialInc(EState *estate);
+
+extern void ExecMaterialIncMarkKeep(MaterialState *ms, IncState state); 
+
+extern void ExecHashJoinIncMarkKeep(HashJoinState *hjs, IncState state); 
+
+extern void ExecHashIncreaseNumBuckets(HashJoinTable hashtable);
+
+extern int ExecNestLoopMemoryCost(NestLoopState * node, bool estimate); 
+
+extern void ExecNestLoopIncMarkKeep(NestLoopState *nl, IncState state); 
+
+extern void BuildOuterHashNode(HashJoinState *hjstate, EState *estate, int eflags); 
+
 #endif
 

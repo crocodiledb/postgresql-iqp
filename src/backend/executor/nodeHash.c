@@ -37,9 +37,8 @@
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
 
-
 static void ExecHashIncreaseNumBatches(HashJoinTable hashtable);
-static void ExecHashIncreaseNumBuckets(HashJoinTable hashtable);
+void ExecHashIncreaseNumBuckets(HashJoinTable hashtable);
 static void ExecHashBuildSkewHash(HashJoinTable hashtable, Hash *node,
 					  int mcvsToUse);
 static void ExecHashSkewTableInsert(HashJoinTable hashtable,
@@ -755,7 +754,7 @@ ExecHashIncreaseNumBatches(HashJoinTable hashtable)
  *		increase the original number of buckets in order to reduce
  *		number of tuples per bucket
  */
-static void
+void
 ExecHashIncreaseNumBuckets(HashJoinTable hashtable)
 {
 	HashMemoryChunk chunk;
@@ -1712,3 +1711,66 @@ dense_alloc(HashJoinTable hashtable, Size size)
 	/* return pointer to the start of the tuple memory */
 	return ptr;
 }
+
+int 
+ExecEstimateHashTableSize(double ntuples, int tupwidth)
+{
+	int			tupsize;
+	double		inner_rel_bytes;
+	long		bucket_bytes;
+	long		max_pointers;
+	long		mppow2;
+	int			nbuckets;
+	double		dbuckets;
+
+	/* Force a plausible relation size if no info */
+	if (ntuples <= 0.0)
+		ntuples = 1000.0;
+
+	/*
+	 * Estimate tupsize based on footprint of tuple in hashtable... note this
+	 * does not allow for any palloc overhead.  The manipulations of spaceUsed
+	 * don't count palloc overhead either.
+	 */
+	tupsize = HJTUPLE_OVERHEAD +
+		MAXALIGN(SizeofMinimalTupleHeader) +
+		MAXALIGN(tupwidth);
+	inner_rel_bytes = ntuples * tupsize;
+
+	/*
+	 * Set nbuckets to achieve an average bucket load of NTUP_PER_BUCKET when
+	 * memory is filled, assuming a single batch; but limit the value so that
+	 * the pointer arrays we'll try to allocate do not exceed work_mem nor
+	 * MaxAllocSize.
+	 *
+	 * Note that both nbuckets and nbatch must be powers of 2 to make
+	 * ExecHashGetBucketAndBatch fast.
+	 */
+	max_pointers = (work_mem * 1024L) / sizeof(HashJoinTuple);
+	max_pointers = Min(max_pointers, MaxAllocSize / sizeof(HashJoinTuple));
+	/* If max_pointers isn't a power of 2, must round it down to one */
+	mppow2 = 1L << my_log2(max_pointers);
+	if (max_pointers != mppow2)
+		max_pointers = mppow2 / 2;
+
+	/* Also ensure we avoid integer overflow in nbatch and nbuckets */
+	/* (this step is redundant given the current value of MaxAllocSize) */
+	max_pointers = Min(max_pointers, INT_MAX / 2);
+
+	dbuckets = ceil(ntuples / NTUP_PER_BUCKET);
+	dbuckets = Min(dbuckets, max_pointers);
+	nbuckets = (int) dbuckets;
+	/* don't let nbuckets be really small, though ... */
+	nbuckets = Max(nbuckets, 1024);
+	/* ... and force it to be a power of 2. */
+	nbuckets = 1 << my_log2(nbuckets);
+
+	/*
+	 * If there's not enough space to store the projected number of tuples and
+	 * the required bucket headers, we will need multiple batches.
+	 */
+	bucket_bytes = sizeof(HashJoinTuple) * nbuckets;
+
+    return (int)(inner_rel_bytes + bucket_bytes); 
+}
+

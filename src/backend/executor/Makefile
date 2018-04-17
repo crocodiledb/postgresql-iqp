@@ -31,6 +31,7 @@ OBJS = execAmi.o execCurrent.o execExpr.o execExprInterp.o \
        nodeForeignscan.o nodeWindowAgg.o tstoreReceiver.o tqueue.o spi.o \
        nodeTableFuncscan.o \
 	   incmeta.o nodeHashjoinInc.o nodeSortInc.o nodeMergejoinInc.o nodeAggInc.o \
-	   incTupleQueue.o incTQPool.o nodeNestloopInc.o execTPCH.o 
+	   incTupleQueue.o incTQPool.o nodeNestloopInc.o execTPCH.o incDecideState.o \
+	   nodeMaterialInc.o incmodifyplan.o
 
 include $(top_srcdir)/src/backend/common.mk

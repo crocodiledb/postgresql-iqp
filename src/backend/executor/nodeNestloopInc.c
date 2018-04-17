@@ -34,11 +34,12 @@
 #include "executor/incmeta.h"
 #include "executor/incinfo.h"
 
-#define NL_NEEDOUTER 1
-#define NL_RESCANINNER 2
-#define NL_NEEDINNER 3
-#define NL_HASHJOIN 4
-#define NL_NLJOIN 5
+#define NL_BUILD_HASHTABLE 0
+#define NL_NEED_INNER 1
+#define NL_NEED_OUTER 2
+#define NL_SCAN_BUCKET_INNER 3
+#define NL_RESCAN_INNER      4
+#define NL_SCAN_BUCKET_OUTER 5
 
 static HashJoin *BuildHJFromNL(NestLoop *nl);
 static Hash *BuildHashFromNL(NestLoop *nl);
@@ -46,10 +47,10 @@ static void LinkHJToNL(NestLoopState *nl_state, HashJoinState *hj_state);
 static List* ExtractHashClauses(List *joinclauses); 
 static List* ExtractNonHashClauses(List *joinclauses); 
 
-static void BuildHashTable(HashJoinState *hjstate, TupleTableSlot *slot);
-static void FinalizeHashTable(HashJoinState *node); 
-static TupleTableSlot *ProbeHashTable(HashJoinState *hjstate, TupleTableSlot *outerSlot); 
-
+static bool
+ExecNLScanHashBucket(HashJoinState *hjstate,
+                    ExprContext *econtext, 
+                    bool outer); 
 
 /* ----------------------------------------------------------------
  *		ExecNestLoopIncReal(node)
@@ -85,7 +86,6 @@ static TupleTableSlot *
 ExecNestLoopIncReal(PlanState *pstate)
 {
 	NestLoopState *node = castNode(NestLoopState, pstate);
-    HashJoinState *hjstate = node->nl_hj; 
     IncInfo       *incInfo = pstate->ps_IncInfo; 
 	NestLoop   *nl;
 	PlanState  *innerPlan;
@@ -112,6 +112,20 @@ ExecNestLoopIncReal(PlanState *pstate)
 	innerPlan = innerPlanState(node);
 	econtext = node->js.ps.ps_ExprContext;
 
+    HashJoinState *hjstate = node->nl_hj; 
+
+    /* inner/outer hashnode/hashtable */
+    HashState     *innerHashNode = innerPlanState(hjstate);
+	HashJoinTable innerHashTable = hjstate->hj_HashTable;
+
+    HashState     *outerHashNode = hjstate->hj_OuterHashNode;
+    HashJoinTable outerHashTable = hjstate->hj_OuterHashTable; 
+
+    bool        hasMatch = false; 
+	uint32		hashvalue;
+    int			batchno;
+    List	   *hashkeys = innerHashNode->hashkeys;
+
 	/*
 	 * Reset per-tuple memory context to free any expression evaluation
 	 * storage allocated in the previous tuple cycle.
@@ -130,147 +144,272 @@ ExecNestLoopIncReal(PlanState *pstate)
 
         switch (node->nl_JoinState)
         {
-            case NL_NEEDOUTER:
-                // get outer tuple
-    			ENL1_printf("getting new outer tuple");
-    			outerTupleSlot = ExecProcNode(outerPlan);
-    
-    			/*
-    			 * if there are no more outer tuples, then the join is complete..
-    			 */
-    			if (TupIsNull(outerTupleSlot))
-    			{
-    				ENL1_printf("no outer tuple, ending join");
-                    //node->nl_isComplete = TupIsComplete(outerTupleSlot); 
-    				return NULL;
-    			}
-    
-    			ENL1_printf("saving new outer tuple information");
-    			econtext->ecxt_outertuple = outerTupleSlot;
+            case NL_BUILD_HASHTABLE:
+                Assert(innerHashTable == NULL);
+                				
+                innerHashTable = ExecHashTableCreate((Hash *) innerHashNode->ps.plan,
+												hjstate->hj_HashOperators,
+												false);
 
-                if (node->nl_hashBuild && incInfo->rightAction == PULL_DELTA)
-                    node->nl_JoinState = NL_HASHJOIN; 
-                else
-                    node->nl_JoinState = NL_RESCANINNER; 
-                break; 
-            case NL_RESCANINNER:
-                // do rescanning
-    			/*
-    			 * fetch the values of any outer Vars that must be passed to the
-    			 * inner scan, and store them in the appropriate PARAM_EXEC slots.
-    			 */
-    			foreach(lc, nl->nestParams)
-    			{
-    				NestLoopParam *nlp = (NestLoopParam *) lfirst(lc);
-    				int			paramno = nlp->paramno;
-    				ParamExecData *prm;
-    
-    				prm = &(econtext->ecxt_param_exec_vals[paramno]);
-    				/* Param value should be an OUTER_VAR var */
-    				Assert(IsA(nlp->paramval, Var));
-    				Assert(nlp->paramval->varno == OUTER_VAR);
-    				Assert(nlp->paramval->varattno > 0);
-    				prm->value = slot_getattr(outerTupleSlot,
-    										  nlp->paramval->varattno,
-    										  &(prm->isnull));
-    				/* Flag parameter value as changed */
-    				innerPlan->chgParam = bms_add_member(innerPlan->chgParam,
-    													 paramno);
-    			}
-    
-                /* totem: assign inner PlanState rescan state */
-                if (pstate->isDelta && node->nl_useHash && node->nl_hashBuild && incInfo->rightAction == PULL_BATCH_DELTA) 
-                    innerPlanState(pstate)->chgAction = PULL_BATCH; 
+                hjstate->hj_HashTable = innerHashTable; 
 
-    			/*
-    			 * now rescan the inner plan
-    			 */
-    			ENL1_printf("rescanning inner plan");
+                /* Rescan the delta of inner plan */
+                innerPlan->chgParam = NULL;  
+                innerPlanState(pstate)->chgAction = PULL_DELTA; 
     			ExecReScan(innerPlan);
 
-                node->nl_JoinState = NL_NEEDINNER; 
-                break; 
-            case NL_NEEDINNER:
-         		/*
-        		 * we have an outerTuple, try to get the next inner tuple.
-        		 */
-        		ENL1_printf("getting new inner tuple");
-        
-        		innerTupleSlot = ExecProcNode(innerPlan);
-        		econtext->ecxt_innertuple = innerTupleSlot;
+                node->nl_JoinState = NL_NEED_INNER; 
 
+                break ;
 
-                if (TupIsNull(innerTupleSlot))
-                {
-                    if (node->nl_hashBuild)
-                        node->nl_JoinState = NL_HASHJOIN;
-                    else
-                    {
-                        node->nl_JoinState = NL_NEEDOUTER; 
+            case NL_NEED_INNER:
 
-                        if (pstate->isDelta && node->nl_useHash && hjstate->hj_HashTable != NULL)
-                        { 
-                            FinalizeHashTable(hjstate);
-                            node->nl_hashBuild = true; 
-                        }
-                    }
+                innerTupleSlot = ExecProcNode(innerPlan); 
+
+                /* Insert Into Hash Table*/
+		        if (TupIsNull(innerTupleSlot))
+                {	
+                    
+                    /* resize the hash table if needed (NTUP_PER_BUCKET exceeded) */
+            	    if (innerHashTable->nbuckets != innerHashTable->nbuckets_optimal)
+		                ExecHashIncreaseNumBuckets(innerHashTable);
+
+            	    /* Account for the buckets in spaceUsed (reported in EXPLAIN ANALYZE) */
+                	innerHashTable->spaceUsed += innerHashTable->nbuckets * sizeof(HashJoinTuple);
+                	if (innerHashTable->spaceUsed > innerHashTable->spacePeak)
+		                innerHashTable->spacePeak = innerHashTable->spaceUsed;
+
+                    node->nl_JoinState = NL_NEED_OUTER; 
+    
+    				/*
+    				 * need to remember whether nbatch has increased since we
+    				 * began scanning the outer relation
+    				 */
+    				innerHashTable->nbatch_outstart = innerHashTable->nbatch;
+
+                    continue;
                 }
-                else
+
+                /* We have to compute the hash value and insert the tuple */
+                econtext->ecxt_innertuple = innerTupleSlot;
+                if (ExecHashGetHashValue(innerHashTable, econtext, hashkeys,
+                						 false, false,
+            							 &hashvalue))
+            	{
+            	    /* No skew optimization, so insert normally */
+            	    ExecHashTableInsert(innerHashTable, innerTupleSlot, hashvalue);
+            	    innerHashTable->totalTuples += 1;
+            	}
+
+                if (outerHashTable != NULL)
                 {
-                    node->nl_JoinState = NL_NLJOIN; 
-                    if (TupIsDelta(innerTupleSlot) && pstate->isDelta && node->nl_useHash && !node->nl_hashBuild)
-                        BuildHashTable(hjstate, innerTupleSlot); 
+                    hjstate->hj_CurHashValue = hashvalue;
+		    		ExecHashGetBucketAndBatch(outerHashTable, hashvalue,
+		    								  &hjstate->hj_CurBucketNo, &batchno);
+		    		hjstate->hj_CurSkewBucketNo = ExecHashGetSkewBucket(outerHashTable,
+		    														 hashvalue);
+		    		hjstate->hj_CurTuple = NULL; 
+                    
+                    /* We assume only one batch, which means inner/outer hash table is stored in memory */
+                    Assert(batchno == 0); 
+                    node->nl_JoinState = NL_SCAN_BUCKET_OUTER; 
                 }
+
                 break; 
-            case NL_HASHJOIN:
-                retTupleSlot = ProbeHashTable(hjstate, outerTupleSlot); 
-                if (retTupleSlot)
-                    return retTupleSlot; 
-                node->nl_JoinState = NL_NEEDOUTER; 
-                break; 
-            case NL_NLJOIN:
-                node->nl_JoinState = NL_NEEDINNER; 
-        		/*
-        		 * at this point we have a new pair of inner and outer tuples so we
-        		 * test the inner and outer tuples to see if they satisfy the node's
-        		 * qualification.
-        		 *
-        		 * Only the joinquals determine MatchedOuter status, but all quals
-        		 * must pass to actually return the tuple.
-        		 */
-        		ENL1_printf("testing qualification"); 
+
+            case NL_SCAN_BUCKET_OUTER:
+                
+                if (!ExecNLScanHashBucket(hjstate, econtext, true))
+                {
+                    node->nl_JoinState = NL_NEED_INNER;
+                    continue; 
+                }
         
-        		if (ExecQual(joinqual, econtext))
+        		if (joinqual == NULL || ExecQual(joinqual, econtext))
         		{
         			if (otherqual == NULL || ExecQual(otherqual, econtext))
-        			{
-        				/*
-        				 * qualification was satisfied so we project and return the
-        				 * slot containing the result tuple using ExecProject().
-        				 */
-        				ENL1_printf("qualification succeeded, projecting tuple");
-        
         				return ExecProject(node->js.ps.ps_ProjInfo);
-        			}
         			else
         				InstrCountFiltered2(node, 1);
         		}
         		else
         			InstrCountFiltered1(node, 1);
-        
-        		/*
-        		 * Tuple fails qual, so free per-tuple memory and try again.
-        		 */
-        		ResetExprContext(econtext);
-        
-        		ENL1_printf("qualification failed, looping");
 
                 break;
+
+            case NL_NEED_OUTER:
+
+                if (incInfo->leftAction == PULL_NOTHING)
+                    return NULL; 
+
+    			outerTupleSlot = ExecProcNode(outerPlan);
+
+				if (TupIsNull(outerTupleSlot))
+                {
+                    if (node->nl_keep && outerHashTable != NULL)
+                    {
+                        /* resize the hash table if needed (NTUP_PER_BUCKET exceeded) */
+                	    if (outerHashTable->nbuckets != outerHashTable->nbuckets_optimal)
+    		                ExecHashIncreaseNumBuckets(outerHashTable);
+    
+                	    /* Account for the buckets in spaceUsed (reported in EXPLAIN ANALYZE) */
+                    	outerHashTable->spaceUsed += outerHashTable->nbuckets * sizeof(HashJoinTuple);
+                    	if (outerHashTable->spaceUsed > outerHashTable->spacePeak)
+    		                outerHashTable->spacePeak = outerHashTable->spaceUsed;
+                    }
+                    return NULL;
+                }
+
+				econtext->ecxt_outertuple = outerTupleSlot;
+
+                /*
+                 * Do we keep this tuple?
+                 * */
+                if (node->nl_keep)
+                {
+                    if (outerHashTable == NULL)
+                    {
+                        outerHashTable = ExecHashTableCreate((Hash *) outerHashNode->ps.plan, 
+											                    hjstate->hj_HashOperators,
+												                false);
+
+                        outerHashNode->hashtable = outerHashTable; 
+
+                        hjstate->hj_OuterHashTable = outerHashTable; 
+                    }
+
+                    if (ExecHashGetHashValue(outerHashTable, econtext, hjstate->hj_OuterHashKeys, 
+								 true,	/* outer tuple */
+								 false, &hashvalue))
+                    {
+                        /* Insert into the hash table */
+                        ExecHashTableInsert(outerHashTable, outerTupleSlot, hashvalue);
+                	    outerHashTable->totalTuples += 1;
+                    }
+                    else
+                    {
+                        elog(ERROR, "Null attributes when computing hash values"); 
+                    }
+                }
+
+                /* Two things
+                 *      1) Get bucket for the inner hash table
+                 *      2) Rescan inner
+                 * */
+
+				/*
+				 * Find the corresponding bucket for this tuple in the main
+				 * hash table or skew hash table.
+				 */
+                if (innerHashTable != NULL)
+                {
+                    if (!node->nl_keep) /* hashvalue has been not computed*/
+                        ExecHashGetHashValue(innerHashTable, econtext, 
+                                             hjstate->hj_OuterHashKeys, 
+                                             true, /* outer tuple */ 
+								             false, &hashvalue); 
+
+                    hjstate->hj_CurHashValue = hashvalue;
+                        
+				    ExecHashGetBucketAndBatch(innerHashTable, hashvalue,
+										  &hjstate->hj_CurBucketNo, &batchno);
+				    hjstate->hj_CurSkewBucketNo = ExecHashGetSkewBucket(innerHashTable,
+																    hashvalue);
+				    hjstate->hj_CurTuple = NULL; 
+                }
+
+                /*
+                 * Rescan inner if necessary
+                 */
+                if (node->nl_rescan_action != PULL_NOTHING)
+                {
+        			foreach(lc, nl->nestParams)
+        			{
+        				NestLoopParam *nlp = (NestLoopParam *) lfirst(lc);
+        				int			paramno = nlp->paramno;
+        				ParamExecData *prm;
+        
+        				prm = &(econtext->ecxt_param_exec_vals[paramno]);
+        				/* Param value should be an OUTER_VAR var */
+        				Assert(IsA(nlp->paramval, Var));
+        				Assert(nlp->paramval->varno == OUTER_VAR);
+        				Assert(nlp->paramval->varattno > 0);
+        				prm->value = slot_getattr(econtext->ecxt_outertuple,
+        										  nlp->paramval->varattno,
+        										  &(prm->isnull));
+        				/* Flag parameter value as changed */
+        				innerPlan->chgParam = bms_add_member(innerPlan->chgParam,
+        													 paramno);
+        			}
+
+                    /* totem: assign inner PlanState rescan state */
+                    innerPlanState(pstate)->chgAction = node->nl_rescan_action; 
+    
+        			/*
+        			 * now rescan the inner plan
+        			 */
+        			ExecReScan(innerPlan);
+                }
+
+                if (innerHashTable != NULL)
+                    node->nl_JoinState = NL_SCAN_BUCKET_INNER;  
+                else
+                    node->nl_JoinState = NL_RESCAN_INNER; 
+
+                break;   
+
+            case NL_SCAN_BUCKET_INNER:
+
+                if (!ExecNLScanHashBucket(hjstate, econtext, false))
+                {
+                    if (node->nl_rescan_action != PULL_NOTHING)
+                        node->nl_JoinState = NL_RESCAN_INNER; 
+                    else
+                        node->nl_JoinState = NL_NEED_OUTER; 
+                    continue; 
+                }
+
+                /* Perform join*/
+        		if (joinqual == NULL || ExecQual(joinqual, econtext))
+        		{
+        			if (otherqual == NULL || ExecQual(otherqual, econtext))
+        				return ExecProject(node->js.ps.ps_ProjInfo);
+        			else
+        				InstrCountFiltered2(node, 1);
+        		}
+        		else
+        			InstrCountFiltered1(node, 1);
+
+                break; 
+
+            case NL_RESCAN_INNER:
+                innerTupleSlot = ExecProcNode(innerPlan);
+                econtext->ecxt_innertuple = innerTupleSlot;
+
+                if (TupIsNull(innerTupleSlot))
+                {
+                    node->nl_JoinState = NL_NEED_OUTER; 
+                    continue; 
+                }
+
+		        ResetExprContext(econtext);
+
+        		if (joinqual == NULL || ExecQual(joinqual, econtext))
+        		{
+        			if (otherqual == NULL || ExecQual(otherqual, econtext))
+        				return ExecProject(node->js.ps.ps_ProjInfo);
+        			else
+        				InstrCountFiltered2(node, 1);
+        		}
+        		else
+        			InstrCountFiltered1(node, 1);
+
+                break; 
+
             default: 
                 elog(ERROR, "Unknown State"); 
                 break; 
         }
-
     }
 }
 
@@ -287,18 +426,6 @@ ExecNestLoopInc(PlanState *pstate)
     {
         result_slot = node->js.ps.ps_ProjInfo->pi_state.resultslot; 
         ExecClearTuple(result_slot);
-        /*if (node->nl_isComplete) 
-        {
-            MarkTupComplete(result_slot, true);
-        }
-        else 
-        {
-            // reset the states of nest loop
-        	node->nl_NeedNewOuter = true;
-	        node->nl_MatchedOuter = false;
-
-            MarkTupComplete(result_slot, false);
-        }*/
         return result_slot; 
     }
 }
@@ -314,45 +441,42 @@ ExecNestLoopInc(PlanState *pstate)
 void 
 ExecInitNestLoopInc(NestLoopState *node, int eflags)
 {
-    node->js.ps.isDelta = false; 
     node->nl_useHash = true; 
-    node->nl_hashBuild = false;
-    node->nl_JoinState = NL_NEEDOUTER; 
-    innerPlanState(node)->chgAction = PULL_BATCH;  
+    node->nl_keep = true;
 
-    if (node->nl_useHash)
-    {
-        NestLoop *plan  = (NestLoop *)node->js.ps.plan;
+    node->nl_JoinState = NL_NEED_OUTER; 
+    node->nl_rescan_action = PULL_BATCH; 
+
+    if (use_sym_hashjoin)
+        node->nl_useHash = true; 
+
+    NestLoop *plan  = (NestLoop *)node->js.ps.plan;
     
-        HashJoin *hj_plan = BuildHJFromNL(plan); 
-        Hash     *hash    = BuildHashFromNL(plan); 
-        EState   *estate  = node->js.ps.state;
+    HashJoin *hj_plan = BuildHJFromNL(plan); 
+    Hash     *hash    = BuildHashFromNL(plan); 
+    EState   *estate  = node->js.ps.state;
     
-        /* Link left plan and right plan for hj_plan */
-        outerPlan(hj_plan) = outerPlan(plan);
-        innerPlan(hj_plan) = hash; 
+    /* Link left plan and right plan for hj_plan */
+    outerPlan(hj_plan) = outerPlan(plan);
+    innerPlan(hj_plan) = hash; 
     
-        /* Provide left PlanState */
-        estate->leftChildExist = true;
-        estate->tempLeftPS = outerPlanState(node); 
+    /* Provide left PlanState */
+    estate->leftChildExist = true;
+    estate->tempLeftPS = outerPlanState(node); 
     
-        HashJoinState *hj_state = ExecInitHashJoin(hj_plan, estate, eflags); 
+    HashJoinState *hj_state = ExecInitHashJoin(hj_plan, estate, eflags); 
     
-        /* Link right Plan/PlanState to hash_plan/hash_state */
-        HashState *hash_state = innerPlanState(hj_state);
-        Plan *hash_plan = hash_state->ps.plan;
-        Plan *nl_plan = node->js.ps.plan;
+    /* Link right Plan/PlanState to hash_plan/hash_state */
+    HashState *hash_state = innerPlanState(hj_state);
+    Plan *hash_plan = hash_state->ps.plan;
+    Plan *nl_plan = node->js.ps.plan;
     
-        outerPlan(hash_plan) = innerPlan(nl_plan); 
-        outerPlanState(hash_state) = innerPlanState(node); 
+    outerPlan(hash_plan) = innerPlan(nl_plan); 
+    outerPlanState(hash_state) = innerPlanState(node); 
     
-        node->nl_hj = hj_state; 
-    }
-    else
-    {
-        node->nl_hj = NULL; 
-    }
-    
+    node->nl_hj = hj_state; 
+
+    BuildOuterHashNode(hj_state, estate, eflags); 
 }
 
 
@@ -366,7 +490,20 @@ ExecInitNestLoopInc(NestLoopState *node, int eflags)
 void
 ExecResetNestLoopState(NestLoopState * node)
 {
-    node->nl_hashBuild = false;
+    IncInfo *incInfo = node->js.ps.ps_IncInfo;
+    HashJoinState *hjstate = node->nl_hj; 
+
+    if (incInfo->incState[LEFT_STATE] == STATE_DROP) 
+    {
+        if (hjstate->hj_OuterHashTable != NULL)
+            ExecHashTableDestroy(hjstate->hj_OuterHashTable);
+        hjstate->hj_OuterHashTable = NULL;
+        hjstate->hj_OuterHashNode->hashtable = NULL; 
+    }
+    else if (incInfo->incState[LEFT_STATE] == STATE_KEEPDISK)
+    {
+        Assert(false); 
+    }
 
     PlanState *innerPlan; 
     PlanState *outerPlan; 
@@ -376,8 +513,6 @@ ExecResetNestLoopState(NestLoopState * node)
 
     ExecResetState(innerPlan); 
     ExecResetState(outerPlan); 
-
-    return; 
 }
 
 /* ----------------------------------------------------------------
@@ -391,32 +526,25 @@ void
 ExecInitNestLoopDelta(NestLoopState * node)
 {
     IncInfo *incInfo = node->js.ps.ps_IncInfo; 
-    node->js.ps.isDelta = true;
-    node->nl_JoinState = NL_NEEDOUTER;
-    
-    innerPlanState(node)->chgAction = incInfo->rightAction; 
 
-//    if(node->nl_useHash) /* use hash */
-//    {
-//        if (!node->nl_hashBuild)
-//        {
-//            if (incInfo->rightAction == PULL_DELTA)
-//                innerPlanState(node)->chgState = PROC_INC_DELTA; 
-//            else
-//                innerPlanState(node)->chgState = PROC_INC_BATCH; 
-//        }
-//        else /* is in delta processing, hash built, and need pull batch */
-//        {
-//            innerPlanState(node)->chgState = PROC_NORM_BATCH; 
-//        }
-//    }
-//    else /* nest loop */
-//    {
-//        if (incInfo->rightAction == PULL_DELTA )
-//            innerPlanState(node)->chgState = PROC_INC_DELTA; 
-//        else
-//            innerPlanState(node)->chgState = PROC_INC_BATCH;
-//    }
+    if (node->nl_useHash && (incInfo->rightAction == PULL_BATCH_DELTA || incInfo->rightAction == PULL_DELTA))
+        node->nl_JoinState = NL_BUILD_HASHTABLE; 
+    else
+        node->nl_JoinState = NL_NEED_OUTER; 
+
+    if (node->nl_useHash) 
+    {
+        if (incInfo->rightAction == PULL_BATCH_DELTA)
+            node->nl_rescan_action = PULL_BATCH; 
+        else if (incInfo->rightAction == PULL_DELTA)
+            node->nl_rescan_action = PULL_NOTHING; 
+        else
+            node->nl_rescan_action = incInfo->rightAction; 
+    }
+    else
+    {
+        node->nl_rescan_action = incInfo->rightAction; 
+    }
 
     PlanState *innerPlan; 
     PlanState *outerPlan; 
@@ -426,8 +554,6 @@ ExecInitNestLoopDelta(NestLoopState * node)
 
     ExecInitDelta(innerPlan); 
     ExecInitDelta(outerPlan); 
-
-    return; 
 }
 
 static HashJoin *
@@ -511,163 +637,98 @@ ExtractNonHashClauses(List *joinclauses)
    return NULL;  
 }
 
-#define HJ_NEED_NEW_OUTER 0
-#define HJ_SCAN_BUCKET 1
-
-static void
-BuildHashTable(HashJoinState *node, TupleTableSlot *slot)
+int 
+ExecNestLoopMemoryCost(NestLoopState * node, bool estimate)
 {
-	HashJoinTable hashtable;
-	HashState  *hashNode;
+    if (!use_sym_hashjoin)
+        return 0; 
 
-    hashtable = node->hj_HashTable;
-	hashNode = (HashState *) innerPlanState(node);
-
-    if (hashtable == NULL)
+    if (estimate || node->nl_hj->hj_OuterHashTable == NULL )
     {
-        hashtable = ExecHashTableCreate((Hash *) hashNode->ps.plan,
-                                                node->hj_HashOperators,
-                                                false);
-        node->hj_HashTable = hashtable; 
-        hashNode->hashtable = hashtable;
+        Plan *plan = outerPlan(node->js.ps.plan);
+        return ((ExecEstimateHashTableSize(plan->plan_rows, plan->plan_width) + 1023) / 1024); 
     }
-
-	List	   *hashkeys;
-	ExprContext *econtext;
-	uint32		hashvalue;
-
-	/*
-	 * set expression context
-	 */
-	hashkeys = hashNode->hashkeys;
-	econtext = hashNode->ps.ps_ExprContext;
-
-	/* We have to compute the hash value annd insert the tuple */
-	econtext->ecxt_innertuple = slot;
-	if (ExecHashGetHashValue(hashtable, econtext, hashkeys,
-							 false, hashtable->keepNulls,
-							 &hashvalue))
-	{
-		/* No skew optimization, so insert normally */
-		ExecHashTableInsert(hashtable, slot, hashvalue);
-		hashtable->totalTuples += 1;
-	}
+    else
+    {
+        return (int)((node->nl_hj->hj_OuterHashTable->spaceUsed + 1023) / 1024); 
+    }
 }
 
-static void
-FinalizeHashTable(HashJoinState *node)
+void 
+ExecNestLoopIncMarkKeep(NestLoopState *nl, IncState state)
 {
-    HashJoinTable hashtable = node->hj_HashTable;
+    nl->nl_keep = (state != STATE_DROP); 
+}
 
-	/* Account for the buckets in spaceUsed (reported in EXPLAIN ANALYZE) */
-	hashtable->spaceUsed += hashtable->nbuckets * sizeof(HashJoinTuple);
-	if (hashtable->spaceUsed > hashtable->spacePeak)
-		hashtable->spacePeak = hashtable->spaceUsed;
 
-    node->hj_JoinState = HJ_NEED_NEW_OUTER; 
+static bool
+ExecNLScanHashBucket(HashJoinState *hjstate,
+                    ExprContext *econtext, 
+                    bool outer)
+{
+	ExprState  *hjclauses = hjstate->hashclauses;
+	HashJoinTuple hashTuple = hjstate->hj_CurTuple;
+	uint32		hashvalue = hjstate->hj_CurHashValue;
+    
+    HashJoinTable hashtable;
+    if (outer) 
+        hashtable = hjstate->hj_OuterHashTable;
+    else
+        hashtable = hjstate->hj_HashTable; 
+
+	/*
+	 * hj_CurTuple is the address of the tuple last returned from the current
+	 * bucket, or NULL if it's time to start scanning a new bucket.
+	 *
+	 * If the tuple hashed to a skew bucket then scan the skew bucket
+	 * otherwise scan the standard hashtable bucket.
+	 */
+	if (hashTuple != NULL)
+		hashTuple = hashTuple->next;
+	else if (hjstate->hj_CurSkewBucketNo != INVALID_SKEW_BUCKET_NO)
+		hashTuple = hashtable->skewBucket[hjstate->hj_CurSkewBucketNo]->tuples;
+	else
+		hashTuple = hashtable->buckets[hjstate->hj_CurBucketNo];
+
+	while (hashTuple != NULL)
+	{
+		if (hashTuple->hashvalue == hashvalue)
+		{
+			TupleTableSlot *temptuple;
+
+		    /* insert hashtable's tuple into exec slot so ExecQual sees it */
+            if (outer)
+            {
+		    	temptuple = ExecStoreMinimalTuple(HJTUPLE_MINTUPLE(hashTuple),
+		    									 hjstate->hj_OuterTupleSlot,
+		    									 false);	/* do not pfree */
+		    	econtext->ecxt_outertuple = temptuple;
+            }
+            else
+            {
+ 		    	temptuple = ExecStoreMinimalTuple(HJTUPLE_MINTUPLE(hashTuple),
+		    									 hjstate->hj_HashTupleSlot,
+		    									 false);	/* do not pfree */
+		    	econtext->ecxt_innertuple = temptuple;               
+            }
+
+			/* reset temp memory each time to avoid leaks from qual expr */
+			ResetExprContext(econtext);
+
+			if (ExecQual(hjclauses, econtext))
+			{
+				hjstate->hj_CurTuple = hashTuple;
+				return true;
+			}
+		}
+
+		hashTuple = hashTuple->next;
+	}
+
+	/*
+	 * no match
+	 */
+	return false;
 
 }
 
-static TupleTableSlot *
-ProbeHashTable(HashJoinState *node, TupleTableSlot *outerTupleSlot)
-{	
-	HashState  *hashNode;
-	ExprState  *joinqual;
-	ExprState  *otherqual;
-	ExprContext *econtext;
-	HashJoinTable hashtable;
-	uint32		hashvalue;
-	int			batchno;
-
-	/*
-	 * get information from HashJoin node
-	 */
-	joinqual = node->js.joinqual;
-	otherqual = node->js.ps.qual;
-	hashNode = (HashState *) innerPlanState(node);
-	hashtable = node->hj_HashTable;
-	econtext = node->js.ps.ps_ExprContext;
-
-	/*
-	 * Reset per-tuple memory context to free any expression evaluation
-	 * storage allocated in the previous tuple cycle.
-	 */
-	ResetExprContext(econtext);
-
-    for (;;)
-    {	
-        switch (node->hj_JoinState)
-    	{
-    		case HJ_NEED_NEW_OUTER:
-    
-    			econtext->ecxt_outertuple = outerTupleSlot; 
-
-                /* Compute Hash Value */
-                bool hashValid = ExecHashGetHashValue(hashtable, econtext,
-									 node->hj_OuterHashKeys,
-									 true,	/* outer tuple */
-									 false,
-									 &hashvalue); 
-                /* TODO: we do not consider the case where outertuple includes nulls */
-                Assert(hashValid); 
-
-    			/*
-    			 * Find the corresponding bucket for this tuple in the main
-    			 * hash table or skew hash table.
-    			 */
-    			node->hj_CurHashValue = hashvalue;
-    			ExecHashGetBucketAndBatch(hashtable, hashvalue,
-    									  &node->hj_CurBucketNo, &batchno);
-    
-    			node->hj_CurTuple = NULL;
-    
-    			/* OK, let's scan the bucket for matches */
-    			node->hj_JoinState = HJ_SCAN_BUCKET;
-    
-    			/* FALL THRU */
-    
-    		case HJ_SCAN_BUCKET:
-    
-    			/*
-    			 * Scan the selected hash bucket for matches to current outer
-    			 */
-    			if (!ExecScanHashBucket(node, econtext))
-    			{
-    				/* out of matches; check for possible outer-join fill */
-    				node->hj_JoinState = HJ_NEED_NEW_OUTER;
-    				return NULL; 
-    			}
-    
-    			/*
-    			 * We've got a match, but still need to test non-hashed quals.
-    			 * ExecScanHashBucket already set up all the state needed to
-    			 * call ExecQual.
-    			 *
-    			 * If we pass the qual, then save state for next call and have
-    			 * ExecProject form the projection, store it in the tuple
-    			 * table, and return the slot.
-    			 *
-    			 * Only the joinquals determine tuple match status, but all
-    			 * quals must pass to actually return the tuple.
-    			 */
-    			if (joinqual == NULL || ExecQual(joinqual, econtext))
-    			{
-    				HeapTupleHeaderSetMatch(HJTUPLE_MINTUPLE(node->hj_CurTuple));
-    
-    				if (otherqual == NULL || ExecQual(otherqual, econtext))
-    					return ExecProject(node->js.ps.ps_ProjInfo);
-    				else
-    					InstrCountFiltered2(node, 1);
-    			}
-    			else
-    				InstrCountFiltered1(node, 1);
-    			break;
-    
-    		default:
-    			elog(ERROR, "unrecognized hashjoin state: %d",
-    				 (int) node->hj_JoinState);
-    	}
-    }
-
-    return NULL; 
-}

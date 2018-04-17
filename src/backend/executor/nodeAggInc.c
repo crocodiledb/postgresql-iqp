@@ -2521,7 +2521,7 @@ ExecResetAggState(AggState * node)
         node->table_filled = false;
     
         IncInfo *incInfo = node->ss.ps.ps_IncInfo;
-        if (incInfo->leftIncState == STATE_DROP) 
+        if (incInfo->incState[LEFT_STATE] == STATE_DROP) 
         {		
             ReScanExprContext(node->hashcontext);
     		/* Rebuild an empty hash table */
@@ -2530,7 +2530,7 @@ ExecResetAggState(AggState * node)
     		/* iterator will be reset when the table is filled */
             node->distGroups = 0; 
         } 
-        else if (incInfo->leftIncState == STATE_KEEPDISK)
+        else if (incInfo->incState[LEFT_STATE] == STATE_KEEPDISK)
         {
             Assert(false); /* not implemented yet; will do it soon */
         } 
@@ -2598,7 +2598,7 @@ ExecInitAggDelta(AggState * node)
 }
 
 int 
-ExecAggMemoryCost(AggState * node)
+ExecAggMemoryCost(AggState * node, bool estimate)
 {
     if (node->aggstrategy == AGG_HASHED) 
     {
@@ -2613,9 +2613,12 @@ ExecAggMemoryCost(AggState * node)
     	//hashentrysize += agg_costs->transitionSpace;
     
     	/* plus the per-hash-entry overhead */
-    	hashentrysize += hash_agg_entry_size(node->numaggs);
-    
-        return (int)((hashentrysize*node->distGroups + 1023) / 1024);  
+    	hashentrysize += hash_agg_entry_size(node->numaggs); 
+
+        if (estimate)
+            return (int)((hashentrysize*plan->plan_rows + 1023) / 1024);
+        else
+            return (int)((hashentrysize*node->distGroups + 1023) / 1024);  
     }
     else
     {

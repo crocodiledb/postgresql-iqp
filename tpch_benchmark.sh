@@ -5,13 +5,13 @@ DELTA_HOME=/home/totemtang/IQP/postgresql/pg_scripts/tpch_delta
 
 INC=on
 dm=dp
-update=customer
+update=lineitem
 
 for query in q8
 do
-   for update in supplier
+   for update in lineitem supplier
    do 
-       for budget in 150
+       for budget in 1500
        do
            if [ "$INC" == "on" ]
            then
@@ -27,7 +27,7 @@ do
              -v v_budget=${budget} \
              -v v_dm=${dm} \
              -v v_update="'${update}'" \
-             -f $BENCH_HOME/$query.sql 
+             -f $BENCH_HOME/$query.sql > /dev/null
        done
    done
 done

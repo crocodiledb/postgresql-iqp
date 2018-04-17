@@ -12,6 +12,7 @@
 #include "postgres.h"
 #include "nodes/execnodes.h"
 #include "executor/execdesc.h"
+#include "nodes/plannodes.h"
 
 #include "utils/relcache.h"
 #include "utils/rel.h"
@@ -20,61 +21,66 @@
 #include "executor/incTupleQueue.h"
 #include "executor/incTQPool.h"
 #include "executor/execTPCH.h"
+#include "executor/incDecideState.h"
+#include "executor/incmodifyplan.h"
+
+#include "optimizer/cost.h"
+#include "access/htup_details.h"
 
 #include "miscadmin.h"
 
-#define DELTA_COST 0
 #define DELTA_THRESHOLD 2
 
 bool enable_incremental;
 int  memory_budget;     /* kB units*/
-DecisionMethod decision_method; 
+DecisionMethod decision_method;
 
-static void ExecInitIncInfo(EState *estate, PlanState *ps); 
+bool use_material = true; 
+bool use_sym_hashjoin = true; 
+
+char *incTagName[INC_TAG_NUM] = {"INVALID", "HASHJOIN", "MERGEJOIN", "NESTLOOP", "AGGHASH", "AGGSORT", 
+    "SORT", "MATERIAL", "SEQSCAN", "INDEXSCAN"}; 
+
+
+/* Functions for managing IncInfo */
+static void ExecInitIncInfo (EState *estate, PlanState *ps); 
+static IncInfo * BuildIncInfo (); 
 static void ExecAssignIncInfo (IncInfo **incInfo_array, int numIncInfo, IncInfo *root);
-static IncInfo * ExecInitIncInfoHelper(PlanState *ps, IncInfo *parent, int *count, int *leafCount); 
-
-static void ExecMakeDecision (EState *estate, IncInfo *incInfo); 
-static void ExecEstimateDelta(EState *estate); 
-static void ExecCollectCostInfo(IncInfo *incInfo); 
-static void RunDPSolution(EState *estate); 
-static void SimpleDropDP(EState *estate, int i, int j); 
-static void SortDPHasUpdate (EState *estate, int i, int j); 
-static void SortDPNoUpdate (EState *estate, int i, int j); 
-static void AggDPHasUpdate (EState *estate, int i, int j); 
-static void AggDPNoUpdate (EState *estate, int i, int j); 
-static void HashJoinDPLeftUpdate (EState *estate, int i, int j); 
-static void HashJoinDPRightUpdate (EState *estate, int i, int j); 
-static void HashJoinDPNoUpdate (EState *estate, int i, int j); 
-static void NestLoopDPHasUpdate (EState *estate, int i, int j); 
-static void NestLoopDPNoUpdate (EState *estate, int i, int j); 
-static void ExecDPAssignState (EState *estate, int i, int j, PullAction parentAction); 
-static void PrintStateDecision(EState *estate); 
-
-static void ExecResetDelta(EState *estate, PlanState *ps); 
-static void ExecWaitAndMarkDelta(EState *estate, PlanState *ps); 
-static void ExecGenPullAction(IncInfo *incInfo); 
-static void ExecGenPullActionHelper(IncInfo *incInfo, PullAction parentAction); 
-static bool ExecIncPropUpdate(IncInfo *incInfo); 
-
+static IncInfo * ExecInitIncInfoHelper(PlanState *ps, IncInfo *parent, int *count, int *leafCount);
+static IncInfo *ExecReplicateIncInfoTree(IncInfo *incInfo, IncInfo *parent);
 static void ExecCleanIncInfo(EState *estate); 
 
+/* Functions for estimate updates and propagate updates */
+static void ExecEstimateUpdate(EState *estate, bool slave); 
+static bool ExecIncPropUpdate(IncInfo *incInfo); 
+
+/* Generating, Waiting, and Collecting update */
+static void ExecGenUpdate(EState *estate);
+static void ExecWaitUpdate(EState *estate); 
+static void ExecCollectUpdate(EState *estate); 
+
+/* Functions for deciding intermediate state to be discarded or not */
+static void ExecCollectCostInfo(IncInfo *incInfo, bool compute, bool memory, bool estimate); 
+static void ExecDecideState(DPMeta *dpmeta, IncInfo **incInfoArray, int numIncInfo, int incMemory, bool isSlave); 
+
+/* Functions for changing plan*/
+static void ExecModifyPlan(EState *estate);
+static void ExecFinalizePlan(EState *estate); 
+
+/* Functions for generate pull actions */
+static void ExecGenPullAction(IncInfo *incInfo, PullAction parentAction); 
+
+/* Functions for resetting TQ readers */
+static void ExecResetTQReader(EState *estate); 
+
+/* Collect stat information */
+static void ExecCollectStatInfo(EState *estate);
+
+/* Two helper functions for recursively reset/init inc state */
+void ExecResetState(PlanState *ps);
+void ExecInitDelta(PlanState *ps); 
+
 double GetTimeDiff(struct timeval x , struct timeval y); 
-
-
-/*
- * prototypes for Greedy Algorithms 
- */
-static void ExecGreedyHelper(EState *estate);
-static void AssignState(EState *estate, IncInfo *incInfo, IncState state); 
-
-static int MemComparator(const void * a, const void *b)
-{
-    IncInfo *a_incInfo = *(IncInfo **)a;
-    IncInfo *b_incInfo = *(IncInfo **)b; 
-
-    return a_incInfo->memory_cost - b_incInfo->memory_cost; 
-}
 
 /* 
  * Interfaces for incremental query processing 
@@ -82,6 +88,7 @@ static int MemComparator(const void * a, const void *b)
 void 
 ExecIncStart(EState *estate, PlanState *ps)
 {
+    elog(NOTICE, "Start of Inc Start"); 
     MemoryContext old = MemoryContextSwitchTo(estate->es_query_cxt); 
 
     if (estate->es_isSelect)
@@ -94,7 +101,7 @@ ExecIncStart(EState *estate, PlanState *ps)
         for (int i  = 0, j = 0; i < estate->es_numIncInfo; i++) 
         {
             PlanState *ps = incInfoArray[i]->ps; 
-            if (ps->lefttree == NULL && ps->righttree == NULL)
+            if (ps != NULL && ps->lefttree == NULL && ps->righttree == NULL)
             {
                 estate->reader_ss[j] = (ScanState *)ps;
                 j++;
@@ -114,11 +121,74 @@ ExecIncStart(EState *estate, PlanState *ps)
         TPCH_Update *update = BuildTPCHUpdate(tables_with_update);
         estate->tpch_update = update; 
 
+        if (decision_method == DM_DP)
+        {
+            /* Round memory budget to MB to reduce DP running time */
+            estate->es_incMemory = (memory_budget + 1023)/1024; 
+    
+            /* Create DPMeta for managing DP meta data */
+            estate->dpmeta = BuildDPMeta(estate->es_numIncInfo, estate->es_incMemory); 
+        }
+        else
+        {
+            estate->es_incMemory = memory_budget; 
+        }
+    
+        /* For Stat*/
+        estate->es_statFile = fopen("statfile.txt", "a"); 
+        estate->decisionTime = 0;
+        estate->repairTime = 0;
+        estate->es_incState = (IncState **) palloc(sizeof(IncState *) * estate->es_numIncInfo); 
+        for (int i = 0; i < estate->es_numIncInfo; i++)
+            estate->es_incState[i] = (IncState *)palloc(sizeof(IncState) * MAX_STATE); 
+
         estate->numDelta = 1; 
         estate->leftChildExist = false;
         estate->rightChildExist = false; 
         estate->tempLeftPS = NULL;
         estate->tempRightPS = NULL; 
+        
+        /* Decide intermediate state in the compile time to change plan 
+         *
+         * 1) estimate update
+         * 2) propagate update
+         * 3) collect cost information (Note we need to collect compute cost for incInfo_master )
+         * 4) decide state 
+         * 5) modify plan if necessary 
+         *
+         * */
+
+        /* Note that we need to collect the compute cost here because the plan might be modified */
+
+        /* step 1. estimate and propagate update */
+
+        struct timeval start, end;  
+        gettimeofday(&start , NULL);
+
+        ExecEstimateUpdate(estate, false);
+
+        (void) ExecIncPropUpdate(estate->es_incInfo[estate->es_numIncInfo - 1]); 
+
+        ExecCollectCostInfo(estate->es_incInfo[estate->es_numIncInfo - 1], true, false, false); 
+
+        if (use_material || use_sym_hashjoin)
+        {
+             ExecEstimateUpdate(estate, true); 
+
+             (void) ExecIncPropUpdate(estate->es_incInfo_slave[estate->es_numIncInfo - 1]); 
+
+             ExecCollectCostInfo(estate->es_incInfo_slave[estate->es_numIncInfo - 1], true, true, true); 
+
+             ExecDecideState(estate->dpmeta, estate->es_incInfo_slave, estate->es_numIncInfo, estate->es_incMemory, true); 
+
+        }
+            
+        /* Modify Plan */
+        ExecModifyPlan(estate); 
+        
+        gettimeofday(&end , NULL);
+        estate->decisionTime += GetTimeDiff(start, end);  
+
     }
     else /* Modification Command; Collect Writer */
     {
@@ -133,93 +203,80 @@ ExecIncStart(EState *estate, PlanState *ps)
         }
     }
 
-    MemoryContextSwitchTo(old); 
-}
-
-static 
-void ExecGenDelta(EState *estate)
-{
-    TPCH_Update *update = estate->tpch_update;
-    GenTPCHUpdate(update); 
+    MemoryContextSwitchTo(old);
+    elog(NOTICE, "End of Inc Start"); 
 }
 
 void 
 ExecIncRun(EState *estate, PlanState *planstate)
 {
+    elog(NOTICE, "Start of Inc Run");
     MemoryContext old = MemoryContextSwitchTo(estate->es_query_cxt); 
 
     if (estate->es_isSelect) 
     {
         struct timeval start, end;  
-
         gettimeofday(&start , NULL);
 
-        /* Run the DP algorithm to decide dropping or keeping states */
-        ExecMakeDecision(estate, planstate->ps_IncInfo); 
- 
-        /* Let's perform the drop/keep actions */
-        ExecResetDelta(estate, planstate); 
+        /* step 2. collect cost info, decide state, and generate pull actions */
+        ExecCollectCostInfo(estate->es_incInfo[estate->es_numIncInfo - 1], false, true, false); 
+        ExecDecideState(estate->dpmeta, estate->es_incInfo, estate->es_numIncInfo, estate->es_incMemory, false);
+        ExecGenPullAction(estate->es_incInfo[estate->es_numIncInfo - 1], PULL_BATCH_DELTA);
 
         gettimeofday(&end , NULL);
-        
-        estate->decisionTime = GetTimeDiff(start, end);  
- 
-        /* An temp solution for generating delta*/
-        ExecGenDelta(estate);
+        estate->decisionTime += GetTimeDiff(start, end);  
 
-        /* Wait for delta and mark delta */
-        ExecWaitAndMarkDelta(estate, planstate); 
+        /* step 3. reset state */
+        ExecResetTQReader(estate); 
+        ExecResetState(planstate); 
 
-        /* According to the delta information, we generate pull actions */ 
-        ExecGenPullAction(planstate->ps_IncInfo);
+        /* step 4. generate, wait, collect, and propagate update */
+        ExecGenUpdate(estate);
+        ExecWaitUpdate(estate); 
+        ExecCollectUpdate(estate); 
+        (void) ExecIncPropUpdate(estate->es_incInfo[estate->es_numIncInfo - 1]); 
 
-        /* Let's initialize meta data for delta processing */
-        ExecInitDelta(planstate);  
+        /* step 5. generate pull actions */
+        ExecGenPullAction(estate->es_incInfo[estate->es_numIncInfo - 1], PULL_BATCH_DELTA); 
+
+        /* step 6. init for delta processing */
+        ExecInitDelta(planstate); 
+
+        /* TODO: only one delta right now */
+        ExecFinalizePlan(estate);     
     }
 
-    (void) MemoryContextSwitchTo(old); 
+    (void) MemoryContextSwitchTo(old);
+    elog(NOTICE, "End of Inc Run"); 
 }
 
 void 
 ExecIncFinish(EState *estate, PlanState *planstate)
 {
+    elog(NOTICE, "Start of Inc Finish"); 
     MemoryContext old = MemoryContextSwitchTo(estate->es_query_cxt); 
 
     if (estate->es_isSelect)
     {
+        ExecCollectStatInfo(estate); 
         ExecCleanIncInfo(estate); 
         pfree(estate->reader_ss); 
         DestroyIncTQPool(estate->tq_pool); 
     }
 
     (void) MemoryContextSwitchTo(old); 
+    elog(NOTICE, "End of Inc Finish"); 
 }
 
-/*
- * Help functions for running our dynamic programming algorithm 
- */
-
-/*
- * Step 1. Build IncInfo Trees
- *         This is run in the per-query memory context 
- *         
- *         We only support the following nodes:
- *         1) HashJoin
- *         2) SeqScan
- *         3) IndexScan
- *         4) MergeJoin
- *         5) Aggregation
- *         6) Sort
- *         7) NestLoop 
- *
- */
+/* 
+ * Functions for managing IncInfo 
+ * */
 
 static void 
 ExecInitIncInfo(EState *estate, PlanState *ps) 
 {
     int count = 0; 
     int leafCount = 0; 
-    int incMemory = 0; 
 
     ExecInitIncInfoHelper(ps, NULL, &count, &leafCount);
     estate->es_numLeaf = leafCount; 
@@ -227,52 +284,45 @@ ExecInitIncInfo(EState *estate, PlanState *ps)
     estate->es_incInfo = (IncInfo **) palloc(sizeof(IncInfo *) * count); 
     ExecAssignIncInfo(estate->es_incInfo, count, ps->ps_IncInfo); 
     estate->es_numIncInfo = count; 
-    estate->es_totalMemCost  = 0; 
+    estate->es_totalMemCost  = 0;
+    estate->es_usedMemory = 0;  
 
-    /* Round memory budget to MB to reduce DP running time */
-    if (decision_method == DM_DP)
+    IncInfo *root_replica = ExecReplicateIncInfoTree(ps->ps_IncInfo, NULL); 
+    estate->es_incInfo_slave = (IncInfo **) palloc(sizeof(IncInfo *) * count);
+    ExecAssignIncInfo(estate->es_incInfo_slave, count, root_replica); 
+}
+
+static IncInfo *
+BuildIncInfo()
+{
+    IncInfo *incInfo = (IncInfo *) palloc(sizeof(IncInfo));
+
+    incInfo->type = INC_INVALID; 
+
+    incInfo->ps = NULL;
+    incInfo->parenttree = NULL;
+    incInfo->lefttree = NULL;
+    incInfo->righttree = NULL;  
+
+    incInfo->trigger_computation = -1; 
+    incInfo->id = -1; 
+
+    incInfo->execDPNode = NULL; 
+    incInfo->compute_cost = 0;
+    for (int i = 0; i < MAX_STATE; i++)
     {
-        estate->es_incMemory = (memory_budget + 1023)/1024; 
-        incMemory = estate->es_incMemory; 
-    
-        /* Allocate necessary structures */
-        estate->es_deltaCost = (int **) palloc(sizeof(int *) * count);
-        estate->es_deltaIncState = (IncState **) palloc(sizeof(IncState *) * count);
-        estate->es_deltaMemLeft = (int **) palloc(sizeof(int *) * count);
-        estate->es_deltaLeftPull = (PullAction **) palloc(sizeof(PullAction *) * count); 
-        estate->es_deltaRightPull = (PullAction **) palloc(sizeof(PullAction *) * count); 
-    
-        estate->es_bdCost = (int **) palloc(sizeof(int *) * count);
-        estate->es_bdIncState = (IncState **) palloc(sizeof(IncState *) * count);
-        estate->es_bdMemLeft = (int **) palloc(sizeof(int *) * count);
-        estate->es_bdLeftPull = (PullAction **) palloc(sizeof(PullAction *) * count); 
-        estate->es_bdRightPull = (PullAction **) palloc(sizeof(PullAction *) * count); 
-    
-        for (int i = 0; i < count; i++) 
-        {
-            estate->es_deltaCost[i] = (int *) palloc(sizeof(int) * (incMemory + 1)); 
-            estate->es_deltaIncState[i] = (IncState *) palloc(sizeof(IncState) * (incMemory + 1)); 
-            estate->es_deltaMemLeft[i] = (int *) palloc(sizeof(int) * incMemory); 
-            estate->es_deltaLeftPull[i] = (PullAction *) palloc(sizeof(PullAction) * (incMemory + 1)); 
-            estate->es_deltaRightPull[i] = (PullAction *) palloc(sizeof(PullAction) * (incMemory + 1)); 
-    
-            estate->es_bdCost[i] = (int *) palloc(sizeof(int) * (incMemory + 1));
-            estate->es_bdIncState[i] = (IncState *) palloc(sizeof(IncState) * (incMemory + 1)); 
-            estate->es_bdMemLeft[i] = (int *) palloc(sizeof(int) * (incMemory + 1));
-            estate->es_bdLeftPull[i] = (PullAction *) palloc(sizeof(PullAction) * (incMemory + 1)); 
-            estate->es_bdRightPull[i] = (PullAction *) palloc(sizeof(PullAction) * (incMemory + 1)); 
-        }
-    }
-    else
-    {
-        estate->es_incMemory = memory_budget; 
+        incInfo->memory_cost[i] = 0;
+        incInfo->prepare_cost[i] = 0;
+        incInfo->keep_cost[i] = 0;
+        incInfo->delta_cost[i] = 0; 
+        incInfo->incState[i] = STATE_DROP; 
     }
 
-    /* For Stat*/
-    estate->es_statFile = fopen("statfile.txt", "a"); 
-    estate->decisionTime = 0;
-    estate->repairTime = 0;
-    estate->es_incState = (IncState *) palloc(sizeof(IncState) * count);
+    incInfo->leftAction = PULL_BATCH;
+    incInfo->rightAction = PULL_BATCH; 
+    
+    incInfo->leftUpdate = false;
+    incInfo->rightUpdate = false;
 }
 
 static void 
@@ -316,28 +366,33 @@ ExecInitIncInfoHelper(PlanState *ps, IncInfo *parent, int *count, int *leafCount
     PlanState *innerPlan; 
     PlanState *outerPlan; 
 
-    IncInfo *incInfo = (IncInfo *) palloc(sizeof(IncInfo));
+    IncInfo *incInfo = BuildIncInfo(); 
     incInfo->ps = ps;
     incInfo->parenttree = parent; 
 
-    incInfo->trigger_computation = -1;  
+    IncInfo *outerII = NULL;
 
-    incInfo->leftAction = PULL_BATCH;
-    incInfo->rightAction = PULL_BATCH; 
-
-    incInfo->leftIncState = STATE_DROP;
-    incInfo->rightIncState = STATE_DROP;
-    
-    incInfo->leftUpdate = false;
-    incInfo->rightUpdate = false;
+    AggState *aggState;
 
     switch (ps->type) 
     {
         case T_HashJoinState:
+            incInfo->type = INC_HASHJOIN;
+
             innerPlan = outerPlanState(innerPlanState(ps)); /* Skip Hash node */
             outerPlan = outerPlanState(ps); 
             innerIncInfo(incInfo) = ExecInitIncInfoHelper(innerPlan, incInfo, count, leafCount); 
-            outerIncInfo(incInfo) = ExecInitIncInfoHelper(outerPlan, incInfo, count, leafCount); 
+
+            /* Insert Material node to the left subtree */
+            outerII = BuildIncInfo(); 
+            outerII->type = INC_MATERIAL; 
+            outerII->parenttree = incInfo; 
+            outerII->ps = NULL;  
+            outerIncInfo(incInfo) = outerII;
+
+            (*count)++;
+
+            outerIncInfo(outerII) = ExecInitIncInfoHelper(outerPlan, outerII, count, leafCount); 
             break;
 
         case T_MergeJoinState:
@@ -345,28 +400,52 @@ ExecInitIncInfoHelper(PlanState *ps, IncInfo *parent, int *count, int *leafCount
             break; 
 
         case T_NestLoopState:
+            incInfo->type = INC_NESTLOOP; 
+
             innerPlan = innerPlanState(ps);
             outerPlan = outerPlanState(ps); 
             innerIncInfo(incInfo) = ExecInitIncInfoHelper(innerPlan, incInfo, count, leafCount); 
-            outerIncInfo(incInfo) = ExecInitIncInfoHelper(outerPlan, incInfo, count, leafCount);
+
+            /* Insert Material node to the left subtree */
+            outerII = BuildIncInfo(); 
+            outerII->type = INC_MATERIAL; 
+            outerII->parenttree = incInfo; 
+            outerII->ps = NULL; 
+            outerIncInfo(incInfo) = outerII; 
+
+            (*count)++;
+
+            outerIncInfo(outerII) = ExecInitIncInfoHelper(outerPlan, outerII, count, leafCount); 
             break;  
 
         case T_SeqScanState:
+            incInfo->type = INC_SEQSCAN; 
+            (*leafCount)++;
+            break; 
+
         case T_IndexScanState:
-            innerIncInfo(incInfo) = NULL;
-            outerIncInfo(incInfo) = NULL;
+            incInfo->type = INC_INDEXSCAN; 
             (*leafCount)++; 
             break; 
 
         case T_AggState:
-        case T_SortState:
+            aggState = (AggState *)ps;
+            if (aggState->aggstrategy == AGG_SORTED)
+                incInfo->type = INC_AGGSORT;
+            else
+                incInfo->type = INC_AGGHASH; 
             outerPlan = outerPlanState(ps); 
             outerIncInfo(incInfo) = ExecInitIncInfoHelper(outerPlan, incInfo, count, leafCount);
-            innerIncInfo(incInfo) = NULL;
+            break;
+
+        case T_SortState:
+            incInfo->type = INC_SORT; 
+            outerPlan = outerPlanState(ps); 
+            outerIncInfo(incInfo) = ExecInitIncInfoHelper(outerPlan, incInfo, count, leafCount);
             break; 
 
         default:
-            elog(NOTICE, "unrecognized nodetype: %u", ps->type);
+            elog(ERROR, "InitIncInfoHelper unrecognized nodetype: %u", ps->type);
             return NULL; 
     }
 
@@ -376,51 +455,100 @@ ExecInitIncInfoHelper(PlanState *ps, IncInfo *parent, int *count, int *leafCount
     return incInfo; 
 }
 
-/*
- * Step 2. 
- *      2a. Estimate the potential updates and propogate them to the IncInfo tree
- *      2b. Collect memory_cost and computate_cost
- *      2c. Running DP algorithm to determine which states to keep/drop 
- *      2d. Assign states to IncInfo 
- */
 
-static void 
-ExecMakeDecision (EState *estate, IncInfo *incInfo)
+static IncInfo *
+ExecReplicateIncInfoTree(IncInfo *incInfo, IncInfo *parent)
 {
-    ExecEstimateDelta(estate); 
-    ExecIncPropUpdate(incInfo); /* Step 2a */
+    if (incInfo == NULL)
+        return NULL;
 
-    ExecCollectCostInfo(incInfo); /* Step 2b */ 
+    IncInfo * ret = BuildIncInfo();
+    ret->type = incInfo->type; 
+    ret->ps = incInfo->ps;  
+    ret->id = incInfo->id;
 
-    if (decision_method == DM_DP) 
-    {
-        RunDPSolution(estate); /* Step 2c */
-        ExecDPAssignState(estate, estate->es_numIncInfo - 1, estate->es_incMemory, PULL_BATCH_DELTA); /* Step 2d */
-    }
-    else
-    {
-        if (decision_method == DM_MEMSMALLFIRST || decision_method == DM_MEMBIGFIRST)
-            qsort((void *)estate->es_incInfo, (size_t)estate->es_numIncInfo, sizeof(IncInfo *), MemComparator);
-        ExecGreedyHelper(estate); 
-    }
-    
-    ExecGenPullActionHelper(incInfo, PULL_BATCH_DELTA); 
+    if (ret->ps != NULL)
+        ret->ps->ps_IncInfo_slave = ret; 
+
+    ret->parenttree = parent; 
+    ret->lefttree = ExecReplicateIncInfoTree(incInfo->lefttree, ret); 
+    ret->righttree = ExecReplicateIncInfoTree(incInfo->righttree, ret); 
+
+    return ret; 
 }
 
-static void
-PrintStateDecision(EState *estate)
+static 
+FreeIncInfo(IncInfo *root)
 {
-    IncInfo **incInfoArray = estate->es_incInfo; 
-    int numIncInfo = estate->es_numIncInfo; 
-    elog(NOTICE, "State Decision"); 
-    for (int i = 0; i < numIncInfo; i++)
-    {
-        elog(NOTICE, "%d %d", incInfoArray[i]->leftIncState, incInfoArray[i]->rightIncState); 
-    }
+    if (root->lefttree)
+        FreeIncInfo(root->lefttree);
+    if (root->righttree)
+        FreeIncInfo(root->righttree);
+    pfree(root); 
 }
 
 static void 
-ExecEstimateDelta(EState *estate) 
+ExecCleanIncInfo(EState *estate)
+{
+    /* For Stat*/
+    if (estate->es_statFile != NULL) 
+    {
+        FILE *statFile = estate->es_statFile;
+        fprintf(statFile, "%d\t%d\t%d\t%.2f\t%.2f\t%.2f\t", \
+                estate->es_totalMemCost, estate->es_usedMemory, estate->es_incMemory, estate->batchTime, estate->repairTime, estate->decisionTime); 
+        for (int i = 0; i < estate->es_numIncInfo; i++) 
+        {
+            int id = estate->es_incInfo[i]->id; 
+            fprintf(statFile, "%s(%d,%d) ", incTagName[estate->es_incInfo[i]->type], estate->es_incState[id][LEFT_STATE], estate->es_incState[id][RIGHT_STATE]); 
+        }
+        fprintf(statFile, "\n"); 
+
+        fclose(estate->es_statFile); 
+    }
+
+    /* Free IncInfo */
+//    IncInfo * root = estate->es_incInfo[estate->es_numIncInfo - 1];
+//    while (root->parenttree != NULL)
+//        root = root->parenttree;
+//    FreeIncInfo(root); 
+//
+//    pfree(estate->es_incInfo); 
+//
+//    if (decision_method == DM_DP)
+//    {
+//        for (int i = 0; i < estate->es_numIncInfo; i++) 
+//        {
+//            pfree(estate->es_deltaCost[i]); 
+//            pfree(estate->es_deltaIncState[i]);
+//            pfree(estate->es_deltaMemLeft[i]); 
+//            pfree(estate->es_deltaLeftPull[i]);
+//            pfree(estate->es_deltaRightPull[i]);
+//            
+//            pfree(estate->es_bdCost[i]); 
+//            pfree(estate->es_bdIncState[i]);
+//            pfree(estate->es_bdMemLeft[i]); 
+//            pfree(estate->es_bdLeftPull[i]);
+//            pfree(estate->es_bdRightPull[i]);   
+//        }
+//        pfree(estate->es_deltaCost); 
+//        pfree(estate->es_deltaIncState);
+//        pfree(estate->es_deltaMemLeft); 
+//        pfree(estate->es_deltaLeftPull);
+//        pfree(estate->es_deltaRightPull);
+//        
+//        pfree(estate->es_bdCost); 
+//        pfree(estate->es_bdIncState);
+//        pfree(estate->es_bdMemLeft); 
+//        pfree(estate->es_bdLeftPull);
+//        pfree(estate->es_bdRightPull);      
+//    }
+//
+//    pfree(estate->es_incState);
+}
+
+/* Functions for estimate updates and propagate updates */
+static void 
+ExecEstimateUpdate(EState *estate, bool slave)
 {
     TPCH_Update *update = estate->tpch_update; 
     ScanState **reader_ss_array = estate->reader_ss; 
@@ -429,1173 +557,14 @@ ExecEstimateDelta(EState *estate)
     for (int i = 0; i < estate->es_numLeaf; i++)
     {
         ss = reader_ss_array[i]; 
-        if (CheckTPCHUpdate(update, GEN_TQ_KEY(ss->ss_currentRelation)))
-            ss->ps.ps_IncInfo->leftUpdate = true; 
-    }
-}
-
-static void
-ExecCollectCostInfo(IncInfo *incInfo)
-{
-    PlanState *ps = incInfo->ps; 
-    Plan *plan = ps->plan; 
-
-    EState *estate = ps->state; 
-
-    Plan *innerPlan; 
-    Plan *outerPlan; 
-
-    switch(incInfo->ps->type)
-    {
-        case T_HashJoinState:
-            innerPlan = innerPlan(plan);
-            outerPlan = outerPlan(plan); 
-            incInfo->prepare_cost = (int)(innerPlan->total_cost - outerPlan(innerPlan)->total_cost);
-            incInfo->compute_cost = (int)(plan->total_cost - innerPlan->total_cost - outerPlan->total_cost);
-            incInfo->memory_cost = ExecHashJoinMemoryCost((HashJoinState *) ps);
-            ExecCollectCostInfo(incInfo->lefttree); 
-            ExecCollectCostInfo(incInfo->righttree); 
-            break;
-
-        case T_MergeJoinState:
-            elog(ERROR, "not supported MergeJoin yet"); 
-            break;
-
-        case T_NestLoopState:
-            innerPlan = innerPlan(plan);
-            outerPlan = outerPlan(plan);
-            incInfo->prepare_cost = (int)(plan->startup_cost - innerPlan->total_cost); 
-            incInfo->compute_cost = (int)(plan->total_cost- plan->startup_cost); 
-            incInfo->memory_cost = 0; 
-            ExecCollectCostInfo(incInfo->lefttree); 
-            ExecCollectCostInfo(incInfo->righttree);
-            break;  
-
-        case T_SeqScanState:
-        case T_IndexScanState:
-            incInfo->prepare_cost = plan->startup_cost;
-            incInfo->compute_cost = plan->total_cost - plan->startup_cost; 
-            incInfo->memory_cost = 0; 
-            return;  
-            break; 
-
-        case T_AggState:
-            outerPlan = outerPlan(plan); 
-            AggState *aggState = (AggState *)incInfo->ps; 
-            if (aggState->aggstrategy == AGG_SORTED)
-                incInfo->prepare_cost = (int)(plan->startup_cost - outerPlan->startup_cost); 
-            else /* AGG_HASHED */
-                incInfo->prepare_cost = (int)(plan->startup_cost - outerPlan->total_cost); 
-            incInfo->compute_cost = (int)(plan->total_cost - plan->startup_cost); 
-            incInfo->memory_cost = ExecAggMemoryCost(aggState); 
-            ExecCollectCostInfo(incInfo->lefttree); 
-            break; 
-
-        case T_SortState:
-            outerPlan = outerPlan(plan); 
-            incInfo->prepare_cost = (int)(plan->startup_cost - outerPlan->total_cost); 
-            incInfo->compute_cost = (int)(plan->total_cost - plan->startup_cost); 
-            incInfo->memory_cost = ExecSortMemoryCost((SortState *) ps); 
-            ExecCollectCostInfo(incInfo->lefttree); 
-            break; 
-
-        default:
-            elog(NOTICE, "unrecognized nodetype: %u", ps->type);
-            return NULL; 
-    }
-}
-
-static void 
-RunDPSolution(EState *estate)
-{
-    IncInfo   **incInfoArray = estate->es_incInfo; 
-    int         numIncInfo = estate->es_numIncInfo; 
-
-    IncInfo   *incInfo;
-    PlanState *ps;  
-    int i, j;
-    int incMemory = estate->es_incMemory;  
-
-    /* Init info for leaf nodes */
-    for (i = 0; i < numIncInfo; i++)
-    {
-        incInfo = incInfoArray[i]; 
-        /* If not leaf nodes, break */
-        if (incInfoArray[i]->lefttree != NULL || incInfoArray[i]->righttree != NULL) 
+        if (CheckTPCHUpdate(update, GEN_TQ_KEY(ss->ss_currentRelation))) 
         {
-            incInfo->memory_cost = (incInfo->memory_cost + 1023)/1024;
-            estate->es_totalMemCost += incInfo->memory_cost; 
-            AggState *aggState; 
-
-            switch (incInfo->ps->type)
-            {
-                case T_SortState:
-                    if (incInfo->leftUpdate)
-                        incInfo->execDPNode = SortDPHasUpdate; 
-                    else
-                        incInfo->execDPNode = SortDPNoUpdate; 
-                    break; 
-
-                case T_AggState: 
-                    aggState = (AggState *)incInfo->ps; 
-                    if (aggState->aggstrategy == AGG_SORTED)
-                        incInfo->execDPNode = SimpleDropDP; 
-                    else if (incInfo->leftUpdate) /* AGG_HASHED */
-                        incInfo->execDPNode = AggDPHasUpdate; 
-                    else
-                        incInfo->execDPNode = AggDPNoUpdate; 
-                    break; 
-
-                case T_HashJoinState:
-                    if (incInfo->leftUpdate && !incInfo->rightUpdate)
-                        incInfo->execDPNode = HashJoinDPLeftUpdate;
-                    else if (!incInfo->leftUpdate && incInfo->rightUpdate)
-                        incInfo->execDPNode = HashJoinDPRightUpdate;
-                    else if (!incInfo->leftUpdate && !incInfo->rightUpdate)
-                        incInfo->execDPNode = HashJoinDPNoUpdate; 
-                    else 
-                        elog(ERROR, "We only support updates from a single table"); 
-                    break;
-                case T_NestLoopState:
-                    if (incInfo->leftUpdate && incInfo->rightUpdate)
-                        elog(ERROR, "We only support updates from one side "); 
-                    else if (!incInfo->leftUpdate && !incInfo->rightUpdate)
-                        incInfo->execDPNode = NestLoopDPNoUpdate;
-                    else
-                        incInfo->execDPNode = NestLoopDPHasUpdate; 
-                    break; 
-
-                case T_MergeJoinState:
-                    elog(ERROR, "not supported MergeJoin yet");
-                    break;  
-                default:
-                    elog(ERROR, "unrecognized nodetype: %u", incInfo->ps->type);
-                    return; 
-            }
-        }
-        else 
-        {
-            incInfo->execDPNode = NULL; 
-            for (j = 0; j <= incMemory; j++)
-                SimpleDropDP(estate, i, j); 
-        }
-    }
-
-    for (i = 0; i < numIncInfo; i++)
-    {
-        incInfo = incInfoArray[i]; 
-        if (incInfo->execDPNode == NULL) /* leaf nodes */
-            continue; 
-
-        for (j = 0; j <= incMemory; j++)
-            incInfo->execDPNode(estate, i, j); 
-    }
-
-}
-
-
-/*
- * This is applied to operator that has not state with a single child 
- * */
-static void 
-SimpleDropDP(EState *estate, int i, int j)
-{
-    IncInfo   *incInfo = estate->es_incInfo[i]; 
-
-    /* No Update */
-    estate->es_deltaCost[i][j] = 0; 
-    estate->es_deltaIncState[i][j] = STATE_DROP; 
-    estate->es_deltaMemLeft[i][j] = j; 
-    estate->es_deltaLeftPull[i][j] = PULL_DELTA; 
-    estate->es_deltaRightPull[i][j] = PULL_DELTA; 
- 
-    estate->es_bdCost[i][j] = incInfo->prepare_cost + incInfo->compute_cost;
-    estate->es_bdIncState[i][j] = STATE_DROP;
-    estate->es_bdMemLeft[i][j] = j;
-    estate->es_bdLeftPull[i][j] = PULL_BATCH_DELTA;
-    estate->es_bdRightPull[i][j] = PULL_BATCH_DELTA; 
-
-
-    /* Consider Update */
-    if (incInfo->leftUpdate) 
-    {
-        estate->es_deltaCost[i][j] += DELTA_COST; 
-        estate->es_bdCost[i][j] += DELTA_COST; 
-    }
-
-    /* Consider the cost of subtree */
-    if (incInfo->lefttree != NULL) /* AGG_SORTED */
-    {
-        int left = incInfo->lefttree->id; 
-        estate->es_bdCost[i][j] += estate->es_bdCost[left][j]; 
-
-        if (incInfo->leftUpdate) /* TODO: we assume recomputation here for Aggregation here */
-        {
-            estate->es_deltaCost[i][j] += (incInfo->prepare_cost + incInfo->compute_cost + estate->es_bdCost[left][j]); 
-            estate->es_deltaLeftPull[i][j] = PULL_BATCH_DELTA; 
-        }
-
-    }
-}
-
-/*
- * The following functions have the same parameters
- * i -- index of the current node
- * j -- memory budget 
- * */
-static void 
-SortDPHasUpdate (EState *estate, int i, int j)
-{
-    IncInfo   *incInfo = estate->es_incInfo[i]; 
-
-    int       **deltaCost = estate->es_deltaCost; 
-    IncState  **deltaIncState = estate->es_deltaIncState; 
-    int       **deltaMemLeft = estate->es_deltaMemLeft;
-    PullAction **deltaLeftPull = estate->es_deltaLeftPull; 
-
-    int       **bdCost = estate->es_bdCost;  
-    IncState  **bdIncState = estate->es_bdIncState; 
-    int       **bdMemLeft = estate->es_bdMemLeft;
-    PullAction **bdLeftPull = estate->es_bdLeftPull; 
-
-
-    int left = incInfo->lefttree->id;
-    int dropCost, keepCost; 
-
-    /* compute deltaCost*/
-    deltaCost[i][j] = DELTA_COST + deltaCost[left][j]; /* Always drop */
-    deltaIncState[i][j] = STATE_DROP; 
-    deltaMemLeft[i][j] = j;
-    bdLeftPull[i][j] = PULL_DELTA; 
-    
-    /* compute bdCost*/
-    dropCost = bdCost[left][j] + incInfo->prepare_cost + incInfo->compute_cost + DELTA_COST;
-    if (j == 0 || j < incInfo->memory_cost) /* We can only drop this state */
-    {
-        bdCost[i][j] = dropCost; 
-        bdIncState[i][j] = STATE_DROP; 
-        bdMemLeft[i][j] = j; 
-        bdLeftPull[i][j] = PULL_BATCH_DELTA; 
-    }
-    else                          /* Now we check whether drop or keep */ 
-    {
-        keepCost = deltaCost[left][j - incInfo->memory_cost] + DELTA_COST; 
-        if (keepCost <= dropCost)
-        {
-            bdCost[i][j] = keepCost; 
-            bdIncState[i][j] = STATE_KEEPMEM; 
-            bdMemLeft[i][j] = j - incInfo->memory_cost; 
-            bdLeftPull[i][j] = PULL_DELTA; 
-        }
-        else
-        {
-            bdCost[i][j] = dropCost; 
-            bdIncState[i][j] = STATE_DROP;
-            bdMemLeft[i][j] = j; 
-            bdLeftPull[i][j] = PULL_BATCH_DELTA;
-        }
-    }
-}
-
-static void 
-SortDPNoUpdate (EState *estate, int i, int j)
-{
-    IncInfo   *incInfo = estate->es_incInfo[i]; 
-
-    int       **deltaCost = estate->es_deltaCost; 
-    IncState  **deltaIncState = estate->es_deltaIncState; 
-    int       **deltaMemLeft = estate->es_deltaMemLeft;
-    PullAction **deltaLeftPull = estate->es_deltaLeftPull; 
-
-    int       **bdCost = estate->es_bdCost;  
-    IncState  **bdIncState = estate->es_bdIncState; 
-    int       **bdMemLeft = estate->es_bdMemLeft;
-    PullAction **bdLeftPull = estate->es_bdLeftPull; 
-
-
-    int left = incInfo->lefttree->id;
-    int dropCost; 
-
-    /* compute deltaCost */
-    deltaCost[i][j] = 0; 
-    deltaIncState[i][j] = STATE_DROP; 
-    deltaMemLeft[i][j] = 0; 
-    deltaLeftPull[i][j] = PULL_DELTA; 
-    
-    /* compute bdCost*/
-    dropCost = bdCost[left][j] + incInfo->prepare_cost + incInfo->compute_cost; 
-    if (j == 0 || j < incInfo->memory_cost) 
-    {
-        bdCost[i][j] = dropCost; 
-        bdIncState[i][j] = STATE_DROP; 
-        bdMemLeft[i][j] = j; 
-        bdLeftPull[i][j] = PULL_BATCH_DELTA; 
-    }
-    else 
-    {
-        bdCost[i][j] = 0; 
-        bdIncState[i][j] = STATE_KEEPMEM; 
-        bdMemLeft[i][j] = j - incInfo->memory_cost; 
-        bdLeftPull[i][j] = PULL_DELTA; 
-    }
-}
-
-static void
-AggDPHasUpdate (EState *estate, int i, int j)
-{ 
-    IncInfo   *incInfo = estate->es_incInfo[i]; 
-
-    int       **deltaCost = estate->es_deltaCost; 
-    IncState  **deltaIncState = estate->es_deltaIncState; 
-    int       **deltaMemLeft = estate->es_deltaMemLeft;
-    PullAction **deltaLeftPull = estate->es_deltaLeftPull; 
-
-    int       **bdCost = estate->es_bdCost;  
-    IncState  **bdIncState = estate->es_bdIncState; 
-    int       **bdMemLeft = estate->es_bdMemLeft;
-    PullAction **bdLeftPull = estate->es_bdLeftPull; 
-
-
-    int left = incInfo->lefttree->id;
-    int dropCost, keepCost; 
-
-    /* compute deltaCost*/
-    dropCost = bdCost[left][j] + incInfo->prepare_cost + DELTA_COST; 
-    if (j == 0 || j < incInfo->memory_cost)
-    {
-        deltaCost[i][j] = dropCost;
-        deltaIncState[i][j] = STATE_DROP; 
-
-        bdCost[i][j] = dropCost + incInfo->compute_cost; 
-        bdIncState[i][j] = STATE_DROP;
-    }
-    else 
-    {
-        /* Here we do a little optimization:
-         * The comparative keepCost and dropCost for delta and batch_delta are the same,
-         * so we use the decision of delta for batch_delta
-         */
-        keepCost = deltaCost[left][j - incInfo->memory_cost] + DELTA_COST; 
-        if (keepCost <= dropCost)
-        {
-            deltaCost[i][j] = keepCost;
-            deltaIncState[i][j] = STATE_KEEPMEM;
-
-            bdCost[i][j] = keepCost + incInfo->compute_cost; 
-            bdIncState[i][j] = STATE_KEEPMEM; 
-        }
-        else
-        {
-            deltaCost[i][j] = dropCost;
-            deltaIncState[i][j] = STATE_DROP; 
-
-            bdCost[i][j] = dropCost + incInfo->compute_cost; 
-            bdIncState[i][j] = STATE_DROP; 
-        }
-    }
-
-    if (deltaIncState[i][j] == STATE_DROP)
-    {
-        deltaMemLeft[i][j] = j; 
-        bdMemLeft[i][j] = j;
-        deltaLeftPull[i][j] = PULL_BATCH_DELTA; 
-        bdLeftPull[i][j] = PULL_BATCH_DELTA; 
-    }
-    else
-    {
-        deltaMemLeft[i][j] = j - incInfo->memory_cost; 
-        bdMemLeft[i][j] = j - incInfo->memory_cost;
-        deltaLeftPull[i][j] = PULL_DELTA; 
-        bdLeftPull[i][j] = PULL_DELTA; 
-    }
-}
-
-static void
-AggDPNoUpdate (EState *estate, int i, int j)
-{
-    IncInfo   *incInfo = estate->es_incInfo[i]; 
-
-    int       **deltaCost = estate->es_deltaCost; 
-    IncState  **deltaIncState = estate->es_deltaIncState; 
-    int       **deltaMemLeft = estate->es_deltaMemLeft;
-    PullAction **deltaLeftPull = estate->es_deltaLeftPull; 
-
-    int       **bdCost = estate->es_bdCost;  
-    IncState  **bdIncState = estate->es_bdIncState; 
-    int       **bdMemLeft = estate->es_bdMemLeft;
-    PullAction **bdLeftPull = estate->es_bdLeftPull; 
-
-    int left = incInfo->lefttree->id;
-    int dropCost, keepCost; 
-
-    deltaCost[i][j] = 0; 
-    deltaIncState[i][j] = STATE_DROP; 
-    deltaMemLeft[i][j] = 0; 
-    deltaLeftPull[i][j] = PULL_DELTA; 
-
-    /* compute bdCost*/
-    dropCost = bdCost[left][j] + incInfo->prepare_cost + incInfo->compute_cost; 
-    if (j == 0 || j < incInfo->memory_cost)
-    {
-        bdCost[i][j] = dropCost; 
-        bdIncState[i][j] = STATE_DROP;
-        bdMemLeft[i][j] = j;
-        bdLeftPull[i][j] = PULL_BATCH_DELTA;
-    }
-    else 
-    {
-        keepCost = incInfo->compute_cost; 
-        bdCost[i][j] = keepCost; 
-        bdIncState[i][j] = STATE_KEEPMEM; 
-        bdMemLeft[i][j] = j - incInfo->memory_cost; 
-        bdLeftPull[i][j] = PULL_DELTA; 
-    }
-}
-
-
-static void
-NestLoopDPHasUpdate (EState *estate, int i, int j)
-{    
-    IncInfo   *incInfo = estate->es_incInfo[i]; 
-
-    int       **deltaCost = estate->es_deltaCost; 
-    IncState  **deltaIncState = estate->es_deltaIncState; 
-    int       **deltaMemLeft = estate->es_deltaMemLeft;
-    PullAction **deltaLeftPull = estate->es_deltaLeftPull; 
-    PullAction **deltaRightPull = estate->es_deltaRightPull; 
-
-    int       **bdCost = estate->es_bdCost;  
-    IncState  **bdIncState = estate->es_bdIncState; 
-    int       **bdMemLeft = estate->es_bdMemLeft;
-    PullAction **bdLeftPull = estate->es_bdLeftPull; 
-    PullAction **bdRightPull = estate->es_bdRightPull; 
-
-
-    int left = incInfo->lefttree->id;
-    int right = incInfo->righttree->id; 
-
-    int deltaDropCost = INT_MAX, bdDropCost = INT_MAX;  
-
-    /* Compute dropCost */
-    int tempCost;
-    int leftMem; 
-    int rightMem;  
-    int deltaDropMemLeft; 
-    int bdDropMemLeft; 
-    int k; 
-    for (k = 0; k <= j; k++)
-    {
-        leftMem = k;
-        rightMem = j - k; 
-
-        if (incInfo->leftUpdate && !incInfo->rightUpdate)
-            tempCost = deltaCost[left][leftMem] + bdCost[right][rightMem] + incInfo->prepare_cost + DELTA_COST; 
-        else /* (!incInfo->leftUpdate && incInfo->rightUpdate) */
-            tempCost = bdCost[left][leftMem] + deltaCost[right][rightMem] + incInfo->prepare_cost + DELTA_COST; 
-
-        if (tempCost < deltaDropCost)
-        {
-            deltaDropCost = tempCost; 
-            deltaDropMemLeft = k;    
-        }
-
-        tempCost = bdCost[left][leftMem] + bdCost[right][rightMem] + incInfo->prepare_cost + incInfo->compute_cost + DELTA_COST; 
-        if (tempCost < bdDropCost)
-        {
-            bdDropCost = tempCost; 
-            bdDropMemLeft = k; 
-        }
-    }
-
-    /* We can only drop the state (since no state) for NestLoop */
-    deltaIncState[i][j] = STATE_DROP;
-    deltaCost[i][j] = deltaDropCost; 
-    deltaMemLeft[i][j] = deltaDropMemLeft; 
-
-    if(incInfo->leftUpdate && !incInfo->rightUpdate) 
-    { 
-        deltaLeftPull[i][j] = PULL_DELTA;
-        deltaRightPull[i][j] = PULL_BATCH_DELTA;
-    }
-    else /* (!incInfo->leftUpdate && incInfo->rightUpdate) */
-    {
-        deltaLeftPull[i][j] = PULL_BATCH_DELTA; 
-        deltaRightPull[i][j] = PULL_DELTA;
-    }
-       
-    bdIncState[i][j] = STATE_DROP;
-    bdCost[i][j] = bdDropCost; 
-    bdMemLeft[i][j] = bdDropMemLeft;  
-    bdLeftPull[i][j] = PULL_BATCH_DELTA; 
-    bdRightPull[i][j] = PULL_BATCH_DELTA; 
-
-}
-
-static void
-NestLoopDPNoUpdate (EState *estate, int i, int j)
-{
-    IncInfo   *incInfo = estate->es_incInfo[i]; 
-
-    int       **deltaCost = estate->es_deltaCost; 
-    IncState  **deltaIncState = estate->es_deltaIncState; 
-    int       **deltaMemLeft = estate->es_deltaMemLeft;
-    PullAction **deltaLeftPull = estate->es_deltaLeftPull; 
-    PullAction **deltaRightPull = estate->es_deltaRightPull; 
-
-    int       **bdCost = estate->es_bdCost;  
-    IncState  **bdIncState = estate->es_bdIncState; 
-    int       **bdMemLeft = estate->es_bdMemLeft;
-    PullAction **bdLeftPull = estate->es_bdLeftPull; 
-    PullAction **bdRightPull = estate->es_bdRightPull;     
-
-    int left = incInfo->lefttree->id;
-    int right = incInfo->righttree->id; 
-
-    deltaCost[i][j] = 0; 
-    deltaIncState[i][j] = STATE_DROP; 
-    deltaMemLeft[i][j] = 0; 
-    deltaLeftPull[i][j] = PULL_DELTA; 
-    deltaRightPull[i][j] = PULL_DELTA; 
-
-    int bdDropCost = INT_MAX; 
-
-    /* Compute dropCost */
-    int tempCost;
-    int leftMem; 
-    int rightMem;  
-    int bdDropMemLeft;
-    int k;  
-    for (k = 0; k <= j; k++)
-    {
-        leftMem = k;
-        rightMem = j - k; 
-
-        tempCost = bdCost[left][leftMem] + bdCost[right][rightMem] + incInfo->prepare_cost + incInfo->compute_cost; 
-        if (tempCost < bdDropCost)
-        {
-            bdDropCost = tempCost; 
-            bdDropMemLeft = k; 
-        }
-    }
-   
-    /* DROP only */ 
-    bdIncState[i][j] = STATE_DROP;
-    
-    bdCost[i][j] = bdDropCost; 
-    bdMemLeft[i][j] = bdDropMemLeft; 
-    bdLeftPull[i][j] = PULL_BATCH_DELTA; 
-    bdRightPull[i][j] = PULL_BATCH_DELTA; 
-
-}
-
-
-static void
-HashJoinDPLeftUpdate (EState *estate, int i, int j)
-{    
-    IncInfo   *incInfo = estate->es_incInfo[i]; 
-
-    int       **deltaCost = estate->es_deltaCost; 
-    IncState  **deltaIncState = estate->es_deltaIncState; 
-    int       **deltaMemLeft = estate->es_deltaMemLeft;
-    PullAction **deltaLeftPull = estate->es_deltaLeftPull; 
-    PullAction **deltaRightPull = estate->es_deltaRightPull; 
-
-    int       **bdCost = estate->es_bdCost;  
-    IncState  **bdIncState = estate->es_bdIncState; 
-    int       **bdMemLeft = estate->es_bdMemLeft;
-    PullAction **bdLeftPull = estate->es_bdLeftPull; 
-    PullAction **bdRightPull = estate->es_bdRightPull; 
-
-
-    int left = incInfo->lefttree->id;
-    int right = incInfo->righttree->id; 
-
-    int deltaDropCost = INT_MAX, deltaKeepCost, bdDropCost = INT_MAX, bdKeepCost; 
-
-    /* First, compute dropCost */
-    int tempCost;
-    int leftMem; 
-    int rightMem;  
-    int deltaDropMemLeft; 
-    int bdDropMemLeft; 
-    int k; 
-    for (k = 0; k <= j; k++)
-    {
-        leftMem = k;
-        rightMem = j - k; 
-
-        tempCost = deltaCost[left][leftMem] + bdCost[right][rightMem] + incInfo->prepare_cost + DELTA_COST; 
-        if (tempCost < deltaDropCost )
-        {
-            deltaDropCost = tempCost; 
-            deltaDropMemLeft = k;    
-        }
-
-        tempCost = bdCost[left][leftMem] + bdCost[right][rightMem] + incInfo->prepare_cost + incInfo->compute_cost + DELTA_COST; 
-        if (tempCost < bdDropCost)
-        {
-            bdDropCost = tempCost; 
-            bdDropMemLeft = k; 
-        }
-    }
-
-    if (j == 0 || j < incInfo->memory_cost)   /* we can only drop the state */
-    {
-        deltaIncState[i][j] = STATE_DROP;
-        bdIncState[i][j] = STATE_DROP;
-    }
-    else                            /* we need to considering keep it */ 
-    {
-        deltaKeepCost = deltaCost[left][j - incInfo->memory_cost] + DELTA_COST; 
-        if (deltaKeepCost < deltaDropCost)
-            deltaIncState[i][j] = STATE_KEEPMEM; 
-        else
-            deltaIncState[i][j] = STATE_DROP;
-
-        bdKeepCost = bdCost[left][j - incInfo->memory_cost] + incInfo->compute_cost + DELTA_COST; 
-        if (bdKeepCost < bdDropCost)
-            bdIncState[i][j] = STATE_KEEPMEM; 
-        else
-            bdIncState[i][j] = STATE_DROP;
-    }
-
-    if (deltaIncState[i][j] == STATE_KEEPMEM)
-    {
-       deltaCost[i][j] = deltaKeepCost; 
-       deltaMemLeft[i][j] = j - incInfo->memory_cost;
-       deltaLeftPull[i][j] = PULL_DELTA; 
-       deltaRightPull[i][j] = PULL_DELTA; 
-    }
-    else
-    {
-        deltaCost[i][j] = deltaDropCost; 
-        deltaMemLeft[i][j] = deltaDropMemLeft;  
-        deltaLeftPull[i][j] = PULL_DELTA; 
-        deltaRightPull[i][j] = PULL_BATCH_DELTA; 
-    }
-        
-    if (bdIncState[i][j] == STATE_KEEPMEM)
-    {
-        bdCost[i][j] = bdKeepCost; 
-        bdMemLeft[i][j] = j - incInfo->memory_cost; 
-        bdLeftPull[i][j] = PULL_BATCH_DELTA; 
-        bdRightPull[i][j] = PULL_DELTA; 
-    }
-    else
-    {
-        bdCost[i][j] = bdDropCost; 
-        bdMemLeft[i][j] = bdDropMemLeft;  
-        bdLeftPull[i][j] = PULL_BATCH_DELTA; 
-        bdRightPull[i][j] = PULL_BATCH_DELTA; 
-    }
-
-}
-
-static void
-HashJoinDPRightUpdate (EState *estate, int i, int j)
-{
-    IncInfo   *incInfo = estate->es_incInfo[i]; 
-
-    int       **deltaCost = estate->es_deltaCost; 
-    IncState  **deltaIncState = estate->es_deltaIncState; 
-    int       **deltaMemLeft = estate->es_deltaMemLeft;
-    PullAction **deltaLeftPull = estate->es_deltaLeftPull; 
-    PullAction **deltaRightPull = estate->es_deltaRightPull; 
-
-    int       **bdCost = estate->es_bdCost;  
-    IncState  **bdIncState = estate->es_bdIncState; 
-    int       **bdMemLeft = estate->es_bdMemLeft;
-    PullAction **bdLeftPull = estate->es_bdLeftPull; 
-    PullAction **bdRightPull = estate->es_bdRightPull; 
-
-
-    int left = incInfo->lefttree->id;
-    int right = incInfo->righttree->id; 
-
-    int deltaDropCost = INT_MAX, bdDropCost = INT_MAX, bdKeepCost = INT_MAX; 
-
-    /* First, compute dropCost */
-    int tempCost;
-    int leftMem; 
-    int rightMem;  
-    int deltaDropMemLeft; 
-    int bdDropMemLeft; 
-    int k; 
-    for (k = 0; k <= j; k++)
-    {
-        leftMem = k;
-        rightMem = j - k; 
-
-        tempCost = bdCost[left][leftMem] + deltaCost[right][rightMem] + DELTA_COST; 
-        if (tempCost < deltaDropCost )
-        {
-            deltaDropCost = tempCost; 
-            deltaDropMemLeft = k;    
-        }
-
-        tempCost = bdCost[left][leftMem] + bdCost[right][rightMem] + incInfo->prepare_cost + incInfo->compute_cost + DELTA_COST; 
-        if (tempCost < bdDropCost)
-        {
-            bdDropCost = tempCost; 
-            bdDropMemLeft = k; 
-        }
-    }
-
-    deltaIncState[i][j] = STATE_DROP; /* always drop state for delta from right */
-    deltaCost[i][j] = deltaDropCost; 
-    deltaMemLeft[i][j] = deltaDropMemLeft;  
-    deltaLeftPull[i][j] = PULL_BATCH_DELTA; 
-    deltaRightPull[i][j] = PULL_DELTA; 
-
-    int bdKeepMemLeft; 
-    if (j == 0 || j < incInfo->memory_cost)   /* we can only drop the state */
-    {
-        bdIncState[i][j] = STATE_DROP;
-    }
-    else                            /* we need to considering keep it */ 
-    {
-        for (k = 0; k <= j - incInfo->memory_cost; k++)
-        {
-            leftMem = k;
-            rightMem = j - incInfo->memory_cost - k; 
-
-            tempCost = bdCost[left][leftMem] + deltaCost[right][rightMem] + incInfo->compute_cost + DELTA_COST; 
-            if (tempCost < bdKeepCost)
-            {
-                bdKeepCost = tempCost;
-                bdKeepMemLeft = k; 
-            }
-        }
-
-        if (bdKeepCost < bdDropCost)
-            bdIncState[i][j] = STATE_KEEPMEM; 
-        else
-            bdIncState[i][j] = STATE_DROP;
-    }
-        
-    if (bdIncState[i][j] == STATE_KEEPMEM)
-    {
-        bdCost[i][j] = bdKeepCost; 
-        bdMemLeft[i][j] = bdKeepMemLeft; 
-        bdLeftPull[i][j] = PULL_BATCH_DELTA; 
-        bdRightPull[i][j] = PULL_DELTA; 
-    }
-    else
-    {
-        bdCost[i][j] = bdDropCost; 
-        bdMemLeft[i][j] = bdDropMemLeft;  
-        bdLeftPull[i][j] = PULL_BATCH_DELTA; 
-        bdRightPull[i][j] = PULL_BATCH_DELTA; 
-    }
-}
-
-static void
-HashJoinDPNoUpdate (EState *estate, int i, int j)
-{
-    IncInfo   *incInfo = estate->es_incInfo[i]; 
-
-    int       **deltaCost = estate->es_deltaCost; 
-    IncState  **deltaIncState = estate->es_deltaIncState; 
-    int       **deltaMemLeft = estate->es_deltaMemLeft;
-    PullAction **deltaLeftPull = estate->es_deltaLeftPull; 
-    PullAction **deltaRightPull = estate->es_deltaRightPull; 
-
-    int       **bdCost = estate->es_bdCost;  
-    IncState  **bdIncState = estate->es_bdIncState; 
-    int       **bdMemLeft = estate->es_bdMemLeft;
-    PullAction **bdLeftPull = estate->es_bdLeftPull; 
-    PullAction **bdRightPull = estate->es_bdRightPull;     
-
-    int left = incInfo->lefttree->id;
-    int right = incInfo->righttree->id; 
-
-    deltaCost[i][j] = 0; 
-    deltaIncState[i][j] = STATE_DROP; 
-    deltaMemLeft[i][j] = 0; 
-    deltaLeftPull[i][j] = PULL_DELTA; 
-    deltaRightPull[i][j] = PULL_DELTA; 
-
-    int bdDropCost = INT_MAX, bdKeepCost; 
-
-    /* First, compute dropCost */
-    int tempCost;
-    int leftMem; 
-    int rightMem;  
-    int bdDropMemLeft;
-    int k;  
-    for (k = 0; k <= j; k++)
-    {
-        leftMem = k;
-        rightMem = j - k; 
-
-        tempCost = bdCost[left][leftMem] + bdCost[right][rightMem] + incInfo->prepare_cost + incInfo->compute_cost; 
-        if (tempCost < bdDropCost)
-        {
-            bdDropCost = tempCost; 
-            bdDropMemLeft = k; 
-        }
-    }
-
-    if (j == 0 || j < incInfo->memory_cost)   /* we can only drop the state */
-    {
-        bdIncState[i][j] = STATE_DROP;
-    }
-    else                            /* we need to considering keep it */ 
-    {
-        bdKeepCost = bdCost[left][j - incInfo->memory_cost] + incInfo->compute_cost; 
-        if (bdKeepCost < bdDropCost)
-            bdIncState[i][j] = STATE_KEEPMEM; 
-        else
-            bdIncState[i][j] = STATE_DROP;
-    }
-
-    if (bdIncState[i][j] == STATE_DROP)
-    {
-        bdCost[i][j] = bdDropCost; 
-        bdMemLeft[i][j] = bdDropMemLeft; 
-        bdLeftPull[i][j] = PULL_BATCH_DELTA; 
-        bdRightPull[i][j] = PULL_BATCH_DELTA; 
-    } 
-    else
-    {
-        bdCost[i][j] = bdKeepCost; 
-        bdMemLeft[i][j] = j - incInfo->memory_cost; 
-        bdLeftPull[i][j] = PULL_BATCH_DELTA; 
-        bdRightPull[i][j] = PULL_DELTA; 
-    }
-}
-
-static void
-ExecDPAssignState (EState *estate, int i, int j, PullAction parentAction)
-{
-    IncInfo *incInfo = estate->es_incInfo[i]; 
-
-    IncState  **deltaIncState = estate->es_deltaIncState; 
-    int       **deltaMemLeft = estate->es_deltaMemLeft;
-    PullAction **deltaLeftPull = estate->es_deltaLeftPull; 
-    PullAction **deltaRightPull = estate->es_deltaRightPull; 
-
-    IncState  **bdIncState = estate->es_bdIncState; 
-    int       **bdMemLeft = estate->es_bdMemLeft;
-    PullAction **bdLeftPull = estate->es_bdLeftPull; 
-    PullAction **bdRightPull = estate->es_bdRightPull; 
-
-    int left, right; 
-
-    if (incInfo->lefttree)
-        left = incInfo->lefttree->id;
-    if (incInfo->righttree)
-        right = incInfo->righttree->id; 
-
-    switch (incInfo->ps->type)
-    {
-        case T_HashJoinState:
-            if (parentAction == PULL_BATCH_DELTA)
-            {
-                incInfo->rightIncState = bdIncState[i][j]; 
-                ExecDPAssignState(estate, left, bdMemLeft[i][j], bdLeftPull[i][j]); 
-                if (bdIncState[i][j] == STATE_KEEPMEM)
-                    ExecDPAssignState(estate, right, j - incInfo->memory_cost - bdMemLeft[i][j], bdRightPull[i][j]); 
-                else
-                    ExecDPAssignState(estate, right, j - bdMemLeft[i][j], bdRightPull[i][j]); 
-            }
-            else if (parentAction == PULL_DELTA) /* Pull Delta */
-            {
-                incInfo->rightIncState = deltaIncState[i][j]; 
-                ExecDPAssignState(estate, left, deltaMemLeft[i][j], deltaLeftPull[i][j]); 
-                if (deltaIncState[i][j] == STATE_KEEPMEM)
-                    ExecDPAssignState(estate, right, j - incInfo->memory_cost - deltaMemLeft[i][j], deltaRightPull[i][j]); 
-                else
-                    ExecDPAssignState(estate, right, j - deltaMemLeft[i][j], deltaRightPull[i][j]); 
-            }
+            if (slave)
+                ss->ps.ps_IncInfo_slave->leftUpdate = true;
             else
-            {
-                elog(ERROR, "PULL_BATCH should exist"); 
-            }
-            estate->es_incState[incInfo->id] = incInfo->rightIncState; 
-            break;
-
-        case T_MergeJoinState:
-            elog(ERROR, "not supported MergeJoin yet"); 
-            break;
-        
-        case T_NestLoopState:
-            if (parentAction == PULL_BATCH_DELTA)
-            {
-                /* IncState are always STATE_DROP */
-                ExecDPAssignState(estate, left, bdMemLeft[i][j], bdLeftPull[i][j]); 
-                ExecDPAssignState(estate, right, j - bdMemLeft[i][j], bdRightPull[i][j]); 
-            }
-            else if (parentAction == PULL_DELTA) /* Pull Delta */
-            {
-                ExecDPAssignState(estate, left, deltaMemLeft[i][j], deltaLeftPull[i][j]); 
-                ExecDPAssignState(estate, right, j - deltaMemLeft[i][j], deltaRightPull[i][j]); 
-            }
-            else
-            {
-                elog(ERROR, "PULL_BATCH should exist"); 
-            }
-            estate->es_incState[incInfo->id] = STATE_DROP;
-            break;  
-
-        case T_SeqScanState:
-        case T_IndexScanState:
-            if (parentAction == PULL_BATCH_DELTA)
-                incInfo->leftIncState = bdIncState[i][j];
-            else if (parentAction == PULL_DELTA) 
-                incInfo->leftIncState = deltaIncState[i][j]; 
-            else
-                elog(ERROR, "PULL_BATCH should exist"); 
-            estate->es_incState[incInfo->id] = incInfo->leftIncState; 
-            break; 
-
-        case T_AggState:
-        case T_SortState:
-            if (parentAction == PULL_BATCH_DELTA)
-            {
-                incInfo->leftIncState = bdIncState[i][j]; 
-                ExecDPAssignState(estate, left, bdMemLeft[i][j], bdLeftPull[i][j]); 
-            }
-            else if (parentAction == PULL_DELTA) /* Pull Delta */
-            {
-                incInfo->leftIncState = deltaIncState[i][j]; 
-                ExecDPAssignState(estate, left, deltaMemLeft[i][j], deltaLeftPull[i][j]); 
-            }
-            else
-            {
-                elog(ERROR, "PULL_BATCH should exist"); 
-            }
-            estate->es_incState[incInfo->id] = incInfo->leftIncState; 
-            break; 
-
-        default:
-            elog(NOTICE, "unrecognized nodetype: %u", incInfo->ps->type);
-            return NULL; 
-    }
-}
-
-static void AssignState(EState *estate, IncInfo *incInfo, IncState state)
-{
-    int id = incInfo->id; 
-    AggState *aggState; 
-    switch(incInfo->ps->type)
-    {
-        case T_HashJoinState:
-            incInfo->rightIncState = state;
-            estate->es_incState[id]  = state; 
-            break;
-
-        case T_MergeJoinState:
-            elog(ERROR, "not supported MergeJoin yet"); 
-            break;
-
-        case T_NestLoopState:
-            incInfo->leftIncState = STATE_DROP; 
-            estate->es_incState[id]  = STATE_DROP; 
-            break;
-
-        case T_SeqScanState:
-        case T_IndexScanState:
-            return; 
-            break; 
-
-        case T_AggState:
-            aggState = (AggState *)incInfo->ps; 
-            if (aggState->aggstrategy == AGG_SORTED)
-            {
-                incInfo->leftIncState = STATE_DROP; 
-                estate->es_incState[id]  = STATE_DROP; 
-            }
-            else
-            {
-                incInfo->leftIncState = state; 
-                estate->es_incState[id]  = state; 
-            }
-            break; 
-
-        case T_SortState:
-            incInfo->leftIncState = state; 
-            estate->es_incState[id]  = state; 
-            break; 
-
-        default:
-            elog(NOTICE, "unrecognized nodetype: %u", incInfo->ps->type);
-            return; 
-    }
-}
-
-static void 
-ExecGreedyHelper(EState *estate)
-{
-    int incMemory = estate->es_incMemory; 
-    IncInfo **incInfo_array = estate->es_incInfo; 
-
-    if (decision_method == DM_TOPDOWN || decision_method == DM_MEMBIGFIRST)
-    {
-        for (int i = estate->es_numIncInfo - 1; i >=0; i--)
-        {
-            IncInfo *incInfo = incInfo_array[i];
-            if (incInfo->memory_cost < incMemory)
-            {
-                AssignState(estate, incInfo, STATE_KEEPMEM); 
-                incMemory -= incInfo->memory_cost; 
-            }
+                ss->ps.ps_IncInfo->leftUpdate = true; 
         }
     }
-    else
-    {
-        for (int i = 0; i < estate->es_numIncInfo; i++)
-        {
-            IncInfo *incInfo = incInfo_array[i];
-            if (incInfo->memory_cost < incMemory)
-            {
-                AssignState(estate, incInfo, STATE_KEEPMEM); 
-                incMemory -= incInfo->memory_cost; 
-            }
-        }
-    }
-}
-
-
-static 
-void ExecResetDelta(EState *estate, PlanState *ps)
-{
-    IncTQPool *tq_pool = estate->tq_pool;
-    ScanState **reader_ss_array = estate->reader_ss; 
-
-    for (int i = 0; i < estate->es_numLeaf; i++)
-        DrainTQReader(tq_pool, reader_ss_array[i]->tq_reader); 
-
-    ExecResetState(ps); 
-} 
-
-/*
- * Wait for delta and if there are delta coming, mark them 
- */
-
-static void 
-ExecWaitAndMarkDelta(EState *estate, PlanState *ps)
-{
-    Relation r; 
-    int numDelta = 0; 
-    int threshold = DELTA_THRESHOLD; 
-
-    IncTQPool *tq_pool = estate->tq_pool; 
-    ScanState **reader_ss_array = estate->reader_ss; 
-
-    for (;;) 
-    {
-		CHECK_FOR_INTERRUPTS();
-        
-        numDelta = GetTQUpdate(tq_pool); 
-
-        if (numDelta >= threshold)
-            break;
-
-       sleep(1); 
-    }
-
-    for(int i = 0; i < estate->es_numLeaf; i++) 
-    {
-        r = reader_ss_array[i]->ss_currentRelation;  
-        reader_ss_array[i]->ps.ps_IncInfo->leftUpdate = HasTQUpdate(tq_pool, r); 
-
-        reader_ss_array[i]->tq_reader = GetTQReader(tq_pool, r, reader_ss_array[i]->tq_reader); 
-    }
-}
-
-
-/*
- * Step 3. After dropping/keeping states is done, 
- *         if there are deltas for base tables, 
- *         we take the following two steps to 
- *         prepare meta information for processing delta data
- *
- *         Step 3a. propogate delta information from base tables to parents 
- *
- *         Step 3b. combined with IncState, decide PullActions (see include/executor/incmeta.h for details). 
- */
-
-static void
-ExecGenPullAction(IncInfo *incInfo) 
-{
-    ExecIncPropUpdate(incInfo); 
-
-    ExecGenPullActionHelper(incInfo, PULL_BATCH_DELTA); 
-}
-
-static void
-ExecGenPullActionHelper(IncInfo *incInfo, PullAction parentAction)
-{
-    incInfo->leftAction = PULL_DELTA; 
-    incInfo->rightAction = PULL_DELTA; 
-
-    if (incInfo->lefttree == NULL && incInfo->righttree == NULL) /* Scan operator */
-    {
-        incInfo->leftAction = parentAction;
-        incInfo->rightAction = parentAction; 
-    }
-    else if (incInfo->righttree == NULL) /* Agg or Sort operator */
-    {
-        switch (incInfo->ps->type) 
-        { 
-            case T_AggState:                                                                   
-                /*                                                                                   
-                 * TODO: right now, we always return the whole aggregation results; 
-                 *       we will fix it later when we support negation                  
-                 */ 
-                if (incInfo->leftIncState == STATE_DROP)
-                    incInfo->leftAction = PULL_BATCH_DELTA;
-
-                break;                                                                               
-                                                                                                      
-            case T_SortState:                                                                        
-                if (parentAction == PULL_BATCH_DELTA && incInfo->leftIncState == STATE_DROP)
-                    incInfo->leftAction = PULL_BATCH_DELTA;
-
-                break;                                                                               
-                                                                                                      
-            default:                                                                                 
-                elog(ERROR, "unsupported node type except sort and aggregate");
-                return;                                                                              
-        }
-    }
-    else if (incInfo->lefttree == NULL)
-    {
-        Assert(false); 
-    }
-    else                                /* Join operator */
-    {
-        if (parentAction == PULL_BATCH_DELTA) 
-        {
-            if (incInfo->leftIncState == STATE_DROP)
-                incInfo->leftAction = PULL_BATCH_DELTA;
- 
-            if (incInfo->rightIncState == STATE_DROP)
-                incInfo->rightAction = PULL_BATCH_DELTA;
-        } 
-        else if (parentAction == PULL_DELTA) /* only need delta */ 
-        {
-            if (incInfo->leftUpdate && incInfo->rightIncState == STATE_DROP) 
-                incInfo->rightAction = PULL_BATCH_DELTA;
-
-            if (incInfo->rightUpdate && incInfo->leftIncState == STATE_DROP) 
-                incInfo->leftAction = PULL_BATCH_DELTA;
-        }
-    }
-
-    if ((!incInfo->leftUpdate && incInfo->leftAction == PULL_DELTA) || parentAction == PULL_NOTHING)
-            incInfo->leftAction = PULL_NOTHING;
-        
-    if ((!incInfo->rightUpdate && incInfo->rightAction == PULL_DELTA) || parentAction == PULL_NOTHING)
-            incInfo->rightAction = PULL_NOTHING; 
-
-    if (incInfo->lefttree != NULL) 
-        ExecGenPullActionHelper(incInfo->lefttree, incInfo->leftAction); 
-
-    if (incInfo->righttree != NULL)
-        ExecGenPullActionHelper(incInfo->righttree, incInfo->rightAction); 
-
 }
 
 static bool 
@@ -1623,6 +592,492 @@ ExecIncPropUpdate(IncInfo *incInfo)
         return incInfo->leftUpdate | incInfo->rightUpdate; 
     }
 }
+
+/* Generating, Waiting, and Collecting update */
+static void ExecGenUpdate(EState *estate)
+{
+    TPCH_Update *update = estate->tpch_update;
+    GenTPCHUpdate(update); 
+}
+
+static void 
+ExecWaitUpdate(EState *estate)
+{
+    int numDelta = 0; 
+    int threshold = DELTA_THRESHOLD; 
+
+    IncTQPool *tq_pool = estate->tq_pool; 
+
+    for (;;) 
+    {
+		CHECK_FOR_INTERRUPTS();
+        
+        numDelta = GetTQUpdate(tq_pool); 
+
+        if (numDelta >= threshold)
+            break;
+
+       sleep(1); 
+    }
+}
+
+static void ExecCollectUpdate(EState *estate)
+{
+    Relation r; 
+
+    IncTQPool *tq_pool = estate->tq_pool; 
+    ScanState **reader_ss_array = estate->reader_ss; 
+
+    for(int i = 0; i < estate->es_numLeaf; i++) 
+    {
+        r = reader_ss_array[i]->ss_currentRelation;  
+        reader_ss_array[i]->ps.ps_IncInfo->leftUpdate = HasTQUpdate(tq_pool, r); 
+
+        reader_ss_array[i]->tq_reader = GetTQReader(tq_pool, r, reader_ss_array[i]->tq_reader); 
+    }
+}
+
+/* Functions for deciding intermediate state to be discarded or not */
+static void
+ExecCollectCostInfo(IncInfo *incInfo, bool compute, bool memory, bool estimate)
+{
+    PlanState *ps = incInfo->ps; 
+    Plan *plan = NULL; 
+
+    if (incInfo->ps != NULL)
+        plan = ps->plan; 
+
+    Plan *innerPlan; 
+    Plan *outerPlan; 
+
+    double plan_rows;
+    int    plan_width; 
+
+    switch(incInfo->type)
+    {
+        case INC_HASHJOIN:
+            innerPlan = innerPlan(plan);
+            outerPlan = outerPlan(plan);
+            if (compute) 
+            {
+                incInfo->prepare_cost[RIGHT_STATE] = (int)(innerPlan->total_cost - outerPlan(innerPlan)->total_cost);
+                incInfo->compute_cost = (int)(plan->total_cost - innerPlan->total_cost - outerPlan->total_cost);
+
+                HashJoin *hj = (HashJoin *)plan; 
+                double num_hashclauses = (double)length(hj->hashclauses); 
+                double inner_delta = innerPlan->plan_rows * 0.01;
+                double outer_delta = outerPlan->plan_rows * 0.01; 
+                //incInfo->keep_cost[LEFT_STATE] = (DEFAULT_CPU_OPERATOR_COST * num_hashclauses + DEFAULT_CPU_TUPLE_COST) \
+                //        * (outerPlan->plan_rows);
+                incInfo->keep_cost[LEFT_STATE] = 0; 
+                if (incInfo->rightUpdate && !incInfo->leftUpdate)
+                {
+                    incInfo->delta_cost[LEFT_STATE] = DEFAULT_CPU_OPERATOR_COST * num_hashclauses * inner_delta; 
+                    incInfo->delta_cost[RIGHT_STATE] = DEFAULT_CPU_OPERATOR_COST * num_hashclauses * outerPlan->plan_rows; 
+                }
+                else if (incInfo->leftUpdate && !incInfo->rightUpdate)
+                {
+                    incInfo->delta_cost[RIGHT_STATE] = DEFAULT_CPU_OPERATOR_COST * num_hashclauses * outer_delta;
+                }
+                else if (incInfo->leftUpdate && incInfo->rightUpdate)
+                {
+                    incInfo->delta_cost[LEFT_STATE]  = DEFAULT_CPU_OPERATOR_COST * num_hashclauses * (inner_delta + outer_delta);
+                    incInfo->delta_cost[RIGHT_STATE] = DEFAULT_CPU_OPERATOR_COST * num_hashclauses * (outer_delta + outerPlan->plan_rows);
+                }
+            }
+            if (memory)
+            {
+                incInfo->memory_cost[RIGHT_STATE] = ExecHashJoinMemoryCost((HashJoinState *) ps, estimate, true);
+                incInfo->memory_cost[LEFT_STATE]  = ExecHashJoinMemoryCost((HashJoinState *) ps, estimate, false);
+            }
+            ExecCollectCostInfo(incInfo->lefttree, compute, memory, estimate); 
+            ExecCollectCostInfo(incInfo->righttree, compute, memory, estimate); 
+            break;
+
+        case INC_MERGEJOIN:
+            elog(ERROR, "not supported MergeJoin yet"); 
+            break;
+
+        case INC_NESTLOOP:
+            innerPlan = innerPlan(plan);
+            outerPlan = outerPlan(plan);
+            if (compute) 
+            {
+                incInfo->prepare_cost[RIGHT_STATE] = (int)(plan->startup_cost - innerPlan->total_cost); 
+                incInfo->compute_cost = (int)(plan->total_cost- plan->startup_cost);
+                NestLoop *nl = (NestLoop *)plan; 
+                double num_hashclauses = (double)length(nl->join.joinqual); 
+                double inner_delta = innerPlan->plan_rows * 0.01;
+                double outer_delta = outerPlan->plan_rows * 0.01; 
+                //incInfo->keep_cost[LEFT_STATE] = (DEFAULT_CPU_OPERATOR_COST * num_hashclauses + DEFAULT_CPU_TUPLE_COST) \
+                //        * (outerPlan->plan_rows);
+                incInfo->keep_cost[LEFT_STATE] = 0; 
+                if (incInfo->rightUpdate && !incInfo->leftUpdate)
+                {
+                    incInfo->delta_cost[LEFT_STATE] = DEFAULT_CPU_OPERATOR_COST * num_hashclauses * inner_delta; 
+                    incInfo->delta_cost[RIGHT_STATE] = DEFAULT_CPU_OPERATOR_COST * num_hashclauses * outerPlan->plan_rows; 
+                }
+                else if (incInfo->leftUpdate && !incInfo->rightUpdate)
+                {
+                    incInfo->delta_cost[RIGHT_STATE] = DEFAULT_CPU_OPERATOR_COST * num_hashclauses * outer_delta;
+                }
+                else if (incInfo->leftUpdate && incInfo->rightUpdate)
+                {
+                    incInfo->delta_cost[LEFT_STATE]  = DEFAULT_CPU_OPERATOR_COST * num_hashclauses * (inner_delta + outer_delta);
+                    incInfo->delta_cost[RIGHT_STATE] = DEFAULT_CPU_OPERATOR_COST * num_hashclauses * (outer_delta + outerPlan->plan_rows);
+                }
+            }
+
+            if (memory)
+                incInfo->memory_cost[LEFT_STATE]  = ExecNestLoopMemoryCost((NestLoopState *) ps, estimate);
+
+            ExecCollectCostInfo(incInfo->lefttree, compute, memory, estimate); 
+            ExecCollectCostInfo(incInfo->righttree, compute, memory, estimate);
+            break;
+
+        case INC_SEQSCAN:
+        case INC_INDEXSCAN:
+            if (compute)
+            {
+                incInfo->prepare_cost[LEFT_STATE] = plan->startup_cost;
+                incInfo->compute_cost = plan->total_cost - plan->startup_cost; 
+            }
+            return;  
+            break;
+
+        case INC_AGGHASH:
+            outerPlan = outerPlan(plan); 
+            if (compute)
+            {
+                incInfo->prepare_cost[LEFT_STATE] = (int)(plan->startup_cost - outerPlan->total_cost); 
+                incInfo->compute_cost = (int)(plan->total_cost - plan->startup_cost); 
+            }
+            
+            if (memory)
+            {
+                incInfo->memory_cost[LEFT_STATE] = ExecAggMemoryCost((AggState *) ps, estimate); 
+            }
+            ExecCollectCostInfo(incInfo->lefttree, compute, memory, estimate); 
+            break;
+
+        case INC_AGGSORT:
+            outerPlan = outerPlan(plan); 
+            if (compute)
+            {
+                incInfo->prepare_cost[LEFT_STATE] = (int)(plan->startup_cost - outerPlan->startup_cost); 
+                incInfo->compute_cost = (int)(plan->total_cost - plan->startup_cost); 
+            }
+            
+            if (memory)
+            {
+                incInfo->memory_cost[LEFT_STATE] = ExecAggMemoryCost((AggState *) ps, estimate); 
+            }
+            ExecCollectCostInfo(incInfo->lefttree, compute, memory, estimate); 
+            break; 
+
+        case INC_SORT:
+            outerPlan = outerPlan(plan); 
+            if (compute)
+            {
+                incInfo->prepare_cost[LEFT_STATE] = (int)(plan->startup_cost - outerPlan->total_cost); 
+                incInfo->compute_cost = (int)(plan->total_cost - plan->startup_cost); 
+            }
+
+            if (memory)
+                incInfo->memory_cost[LEFT_STATE] = ExecSortMemoryCost((SortState *) ps, estimate); 
+            ExecCollectCostInfo(incInfo->lefttree, compute, memory, estimate); 
+            break;
+
+        case INC_MATERIAL:
+            outerPlan = outerIncInfo(incInfo)->ps->plan; 
+            plan_rows = outerPlan->plan_rows; 
+            plan_width = outerPlan->plan_width; 
+            if (compute)
+            {
+                incInfo->prepare_cost[LEFT_STATE] = 0;
+                outerPlan = incInfo->parenttree->ps->lefttree->plan; 
+                incInfo->compute_cost = 0;
+                incInfo->keep_cost[LEFT_STATE] =  (int)(2 * DEFAULT_CPU_OPERATOR_COST * plan_rows);
+            }
+            if (memory)
+            {
+                if (plan == NULL)
+                    incInfo->memory_cost[LEFT_STATE] = (plan_rows * (MAXALIGN(plan_width) + MAXALIGN(SizeofHeapTupleHeader)) + 1023) / 1024;
+                else
+                    incInfo->memory_cost[LEFT_STATE] = ExecMaterialIncMemoryCost((MaterialState *) ps, estimate); 
+            }
+            ExecCollectCostInfo(incInfo->lefttree, compute, memory, estimate); 
+            break; 
+
+        default:
+            elog(ERROR, "CollectCost unrecognized nodetype: %u", ps->type);
+            return NULL; 
+    }
+
+    if (memory && decision_method == DM_DP)
+    {
+        for (int i = 0; i < MAX_STATE; i++)
+            incInfo->memory_cost[i] = (incInfo->memory_cost[i] + 1023) / 1024; 
+    }
+}
+
+static void 
+ExecDecideState(DPMeta *dpmeta, IncInfo **incInfoArray, int numIncInfo, int incMemory, bool isSlave)
+{
+    if (decision_method == DM_DP) 
+    {
+        ExecDPSolution(dpmeta, incInfoArray, numIncInfo, incMemory, isSlave);
+        ExecDPAssignState(dpmeta, incInfoArray, numIncInfo - 1, incMemory, PULL_BATCH_DELTA);
+    }
+    else
+    {
+        ExecGreedySolution(incInfoArray, numIncInfo, incMemory, decision_method); 
+    }
+}
+
+MaterialState *ExecBuildMaterialInc(EState *estate); 
+
+static void
+ExecModifyPlan(EState *estate)
+{
+    MaterialState *ms; 
+    IncInfo **incInfoArray_slave = estate->es_incInfo_slave; 
+    IncInfo *incInfo_slave; 
+
+    IncInfo **incInfoArray = estate->es_incInfo;
+    IncInfo *incInfo; 
+
+    for (int i = 0; i < estate->es_numIncInfo; i++)
+    {
+        incInfo_slave = incInfoArray_slave[i];
+        incInfo = incInfoArray[i]; 
+
+        if (incInfo_slave->type == INC_MATERIAL)
+        {
+            if (incInfo_slave->ps == NULL)
+            {
+                if (incInfo_slave->incState[LEFT_STATE] == STATE_KEEPMEM) /* Build a Material node and insert it */
+                {
+                    estate->tempLeftPS = incInfo_slave->lefttree->ps; 
+                    ms = ExecBuildMaterialInc(estate); 
+                    estate->tempLeftPS = NULL; 
+                    IncInsertNodeAfter((PlanState *)ms, incInfo->parenttree->ps, true); 
+                    incInfo_slave->ps = (PlanState *)ms; 
+                    incInfo->ps = (PlanState *)ms; 
+                    ms->ss.ps.ps_IncInfo = incInfo; 
+                    ms->ss.ps.ps_IncInfo_slave = incInfo_slave; 
+
+                    /* copy some meta data */
+                    ms->ss.ps.plan->plan_rows = ms->ss.ps.plan->lefttree->plan_rows; 
+                    ms->ss.ps.plan->plan_width = ms->ss.ps.plan->lefttree->plan_width; 
+
+                }
+            }
+            else /* Material node exists */
+            {
+                ExecMaterialIncMarkKeep((MaterialState *)incInfo_slave->ps, incInfo_slave->incState[LEFT_STATE]); 
+                if (incInfo->incState[LEFT_STATE] == STATE_DROP && incInfo_slave->incState[LEFT_STATE] == STATE_DROP) /* Drop the Material node */
+                {
+                    IncDeleteNode(incInfo_slave->parenttree->ps, true); 
+                    incInfo_slave->ps = NULL;
+                    incInfo->ps = NULL;  
+                }
+            }
+        }
+
+        if (incInfo_slave->type == INC_HASHJOIN)
+            ExecHashJoinIncMarkKeep((HashJoinState *)incInfo_slave->ps, incInfo_slave->incState[LEFT_STATE]);
+
+        if (incInfo_slave->type == INC_NESTLOOP)
+            ExecNestLoopIncMarkKeep((NestLoopState *)incInfo_slave->ps, incInfo_slave->incState[LEFT_STATE]); 
+    }
+}
+
+static void
+ExecFinalizePlan(EState *estate)
+{
+    IncInfo **incInfoArray = estate->es_incInfo;
+    IncInfo *incInfo; 
+
+    IncInfo **incInfoArray_slave = estate->es_incInfo_slave; 
+    IncInfo *incInfo_slave; 
+
+    for (int i = 0; i < estate->es_numIncInfo; i++)
+    {
+        incInfo = incInfoArray[i]; 
+        incInfo_slave = incInfoArray_slave[i]; 
+
+        if (incInfo->type == INC_MATERIAL && incInfo->ps != NULL)
+        {
+            ExecMaterialIncMarkKeep((MaterialState *)incInfo->ps, STATE_DROP); 
+            if (incInfo->incState[LEFT_STATE] == STATE_DROP) /* Drop the Material node */
+            {
+                IncDeleteNode(incInfo->parenttree->ps, true); 
+                incInfo->ps = NULL; 
+                incInfo_slave->ps = NULL; 
+            }
+
+        }
+    }
+}
+
+/* Generate Pull Actions */
+static void
+ExecGenPullAction(IncInfo *incInfo, PullAction parentAction)
+{
+    incInfo->leftAction = PULL_DELTA; 
+    incInfo->rightAction = PULL_DELTA; 
+
+    if (incInfo->lefttree == NULL && incInfo->righttree == NULL) /* Scan operator */
+    {
+        incInfo->leftAction = parentAction;
+        incInfo->rightAction = parentAction; 
+    }
+    else if (incInfo->righttree == NULL) /* Agg, Sort, or Material operator */
+    {
+        switch (incInfo->type) 
+        { 
+            case INC_AGGHASH:
+            case INC_AGGSORT:
+                /*                                                                                   
+                 * TODO: right now, we always return the whole aggregation results; 
+                 *       we will fix it later when we support negation                  
+                 */ 
+                if (incInfo->incState[LEFT_STATE] == STATE_DROP)
+                    incInfo->leftAction = PULL_BATCH_DELTA;
+
+                break;
+
+            case INC_SORT:
+            case INC_MATERIAL:
+                if (parentAction == PULL_BATCH_DELTA && incInfo->incState[LEFT_STATE] == STATE_DROP)
+                    incInfo->leftAction = PULL_BATCH_DELTA;
+
+                break;
+
+            default:                                                                                 
+                elog(ERROR, "unsupported node type except sort and aggregate");
+                return;                                                                              
+        }
+    }
+    else if (incInfo->lefttree == NULL)
+    {
+        Assert(false); 
+    }
+    else                                /* Join operator */
+    {
+        if (parentAction == PULL_BATCH_DELTA) 
+        {
+            if (incInfo->incState[LEFT_STATE] == STATE_DROP)
+                incInfo->leftAction = PULL_BATCH_DELTA;
+ 
+            if (incInfo->incState[RIGHT_STATE] == STATE_DROP)
+                incInfo->rightAction = PULL_BATCH_DELTA;
+        } 
+        else if (parentAction == PULL_DELTA) /* only need delta */ 
+        {
+            if (incInfo->leftUpdate && incInfo->incState[RIGHT_STATE] == STATE_DROP) 
+                incInfo->rightAction = PULL_BATCH_DELTA;
+
+            if (incInfo->rightUpdate && incInfo->incState[LEFT_STATE] == STATE_DROP) 
+                incInfo->leftAction = PULL_BATCH_DELTA;
+        }
+    }
+
+    if ((!incInfo->leftUpdate && incInfo->leftAction == PULL_DELTA) || parentAction == PULL_NOTHING)
+            incInfo->leftAction = PULL_NOTHING;
+        
+    if ((!incInfo->rightUpdate && incInfo->rightAction == PULL_DELTA) || parentAction == PULL_NOTHING)
+            incInfo->rightAction = PULL_NOTHING; 
+
+    if (incInfo->lefttree != NULL) 
+        ExecGenPullAction(incInfo->lefttree, incInfo->leftAction); 
+
+    if (incInfo->righttree != NULL)
+        ExecGenPullAction(incInfo->righttree, incInfo->rightAction); 
+}
+
+/* Functions for resetting TQ readers */
+static void 
+ExecResetTQReader(EState *estate)
+{
+    IncTQPool *tq_pool = estate->tq_pool;
+    ScanState **reader_ss_array = estate->reader_ss; 
+
+    for (int i = 0; i < estate->es_numLeaf; i++)
+        DrainTQReader(tq_pool, reader_ss_array[i]->tq_reader); 
+}
+
+
+static void 
+ExecCollectStatInfo(EState *estate)
+{
+    IncInfo   **incInfoArray = estate->es_incInfo; 
+    int         numIncInfo = estate->es_numIncInfo; 
+
+    IncInfo   *incInfo;
+    int        id; 
+
+    for (int i = 0; i < numIncInfo; i++)
+    {
+        incInfo = incInfoArray[i]; 
+        id = incInfo->id; 
+        for (int j = 0; j < MAX_STATE; j++)
+            estate->es_totalMemCost += incInfo->memory_cost[j]; 
+
+        if (incInfo->incState[LEFT_STATE] == STATE_KEEPMEM)
+            estate->es_usedMemory += incInfo->memory_cost[LEFT_STATE]; 
+
+        if (incInfo->incState[RIGHT_STATE] == STATE_KEEPMEM) 
+            estate->es_usedMemory += incInfo->memory_cost[RIGHT_STATE];
+
+        switch(incInfo->type)
+        {
+            case INC_HASHJOIN:
+                estate->es_incState[id][LEFT_STATE] = incInfo->incState[LEFT_STATE]; 
+                estate->es_incState[id][RIGHT_STATE]  = incInfo->incState[RIGHT_STATE]; 
+                break;
+    
+            case INC_MERGEJOIN:
+                elog(ERROR, "not supported MergeJoin yet"); 
+                break;
+    
+            case INC_NESTLOOP:
+                estate->es_incState[id][LEFT_STATE]  = incInfo->incState[LEFT_STATE]; 
+                break;
+    
+            case INC_SEQSCAN:
+            case INC_INDEXSCAN:
+                estate->es_incState[id][LEFT_STATE] = incInfo->incState[LEFT_STATE]; 
+                break; 
+    
+            case INC_AGGSORT:
+                estate->es_incState[id][LEFT_STATE]  = STATE_DROP; 
+                break; 
+    
+            case INC_AGGHASH:
+            case INC_MATERIAL:
+            case INC_SORT:
+                estate->es_incState[id][LEFT_STATE]  = incInfo->incState[LEFT_STATE]; 
+                break; 
+
+            default:
+                elog(ERROR, "CollectStat unrecognized nodetype: %u", incInfo->type);
+                return; 
+        }
+    }
+}
+
+/*
+ * Step 3. After dropping/keeping states is done, 
+ *         if there are deltas for base tables, 
+ *         we take the following two steps to 
+ *         prepare meta information for processing delta data
+ *
+ *         Step 3a. propogate delta information from base tables to parents 
+ *
+ *         Step 3b. combined with IncState, decide PullActions (see include/executor/incmeta.h for details). 
+ */
 
 void 
 ExecResetState(PlanState *ps)
@@ -1656,9 +1111,13 @@ ExecResetState(PlanState *ps)
         case T_SortState:
             ExecResetSortState((SortState *) ps); 
             break;
+
+        case T_MaterialState:
+            ExecResetMaterialIncState((MaterialState *) ps);
+            break; 
         
         default:
-            elog(ERROR, "unrecognized nodetype: %u", ps->type);
+            elog(ERROR, "ResetState unrecognized nodetype: %u", ps->type);
             return; 
     }
 }
@@ -1693,83 +1152,20 @@ ExecInitDelta(PlanState *ps)
             ExecInitAggDelta((AggState *) ps); 
             break;
 
+        case T_MaterialState:
+            ExecInitMaterialIncDelta((MaterialState *) ps); 
+            break; 
+
         case T_SortState:
             ExecInitSortDelta((SortState *) ps); 
             break;
         
         default:
-            elog(ERROR, "unrecognized nodetype: %u", ps->type);
+            elog(ERROR, "InitDelta unrecognized nodetype: %u", ps->type);
             return; 
     }
 }
 
-static 
-FreeIncInfo(IncInfo *root)
-{
-    if (root->lefttree)
-        FreeIncInfo(root->lefttree);
-    if (root->righttree)
-        FreeIncInfo(root->righttree);
-    pfree(root); 
-}
-
-static void 
-ExecCleanIncInfo(EState *estate)
-{
-    /* For Stat*/
-    if (estate->es_statFile != NULL) 
-    {
-        FILE *statFile = estate->es_statFile;
-        fprintf(statFile, "%d\t%d\t%.2f\t%.2f\t%.2f\t", \
-                estate->es_totalMemCost, estate->es_incMemory, estate->batchTime, estate->repairTime, estate->decisionTime); 
-        for (int i = 0; i < estate->es_numIncInfo; i++) 
-        {
-            fprintf(statFile, "%d ", estate->es_incState[i]); 
-        }
-        fprintf(statFile, "\n"); 
-
-        fclose(estate->es_statFile); 
-    }
-
-    /* Free IncInfo */
-    IncInfo * root = estate->es_incInfo[estate->es_numIncInfo - 1];
-    while (root->parenttree != NULL)
-        root = root->parenttree;
-    FreeIncInfo(root); 
-
-    pfree(estate->es_incInfo); 
-
-    if (decision_method == DM_DP)
-    {
-        for (int i = 0; i < estate->es_numIncInfo; i++) 
-        {
-            pfree(estate->es_deltaCost[i]); 
-            pfree(estate->es_deltaIncState[i]);
-            pfree(estate->es_deltaMemLeft[i]); 
-            pfree(estate->es_deltaLeftPull[i]);
-            pfree(estate->es_deltaRightPull[i]);
-            
-            pfree(estate->es_bdCost[i]); 
-            pfree(estate->es_bdIncState[i]);
-            pfree(estate->es_bdMemLeft[i]); 
-            pfree(estate->es_bdLeftPull[i]);
-            pfree(estate->es_bdRightPull[i]);   
-        }
-        pfree(estate->es_deltaCost); 
-        pfree(estate->es_deltaIncState);
-        pfree(estate->es_deltaMemLeft); 
-        pfree(estate->es_deltaLeftPull);
-        pfree(estate->es_deltaRightPull);
-        
-        pfree(estate->es_bdCost); 
-        pfree(estate->es_bdIncState);
-        pfree(estate->es_bdMemLeft); 
-        pfree(estate->es_bdLeftPull);
-        pfree(estate->es_bdRightPull);      
-    }
-
-    pfree(estate->es_incState);
-}
 
 double
 GetTimeDiff(struct timeval x , struct timeval y)

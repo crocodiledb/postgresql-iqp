@@ -37,6 +37,12 @@
 #include "executor/incinfo.h"
 #include "executor/incTQPool.h"
 #include "executor/incTupleQueue.h"
+#include "executor/incDecideState.h"
+struct DPMeta; 
+struct IncTQPool; 
+struct TPCH_Update; 
+struct IncTupQueueWriter; 
+struct IncTupQueueReader;
 
 /* ----------------
  *		ExprState node
@@ -520,36 +526,28 @@ typedef struct EState
 	bool		es_use_parallel_mode; /* can we use parallel workers? */
 
     bool        es_incremental; /* totem: execute this query incrementally? */
-    IncInfo   **es_incInfo;     /* totem: array of IncInfo * */
+    struct IncInfo   **es_incInfo;     /* totem: array of IncInfo for drop/keep state */
+    struct IncInfo   **es_incInfo_slave; /* totem: array of IncInfo for plan modification */
     int         es_numIncInfo;
-    int         es_numLeaf;  
-
-    int       **es_deltaCost;       /* totem: cost for computing delta */
-    IncState  **es_deltaIncState;   /* totem: two dimension array of inc states */
-    int       **es_deltaMemLeft;    /* totem: memory allocated to the left subtree */
-    PullAction **es_deltaLeftPull; 
-    PullAction **es_deltaRightPull; 
-
-    int       **es_bdCost;          /* totem: cost of computing both delta and batch */
-    IncState  **es_bdIncState;
-    int       **es_bdMemLeft;
-    PullAction **es_bdLeftPull; 
-    PullAction **es_bdRightPull; 
+    int         es_numLeaf; 
 
     FILE      *es_statFile;
     double    decisionTime; 
     double    repairTime;
     double    batchTime;
-    IncState  *es_incState;
+    enum IncState  **es_incState;
     int        es_incMemory; 
-    int        es_totalMemCost;  
+    int        es_totalMemCost; 
+    int        es_usedMemory;  
 
+    /* Used to accept delta on the fly */
     bool             es_isSelect;
-    IncTQPool        *tq_pool; 
+    struct IncTQPool        *tq_pool; 
     struct ScanState **reader_ss; 
     struct ModifyTableState *writer_mt; 
 
-    TPCH_Update *tpch_update; 
+    struct DPMeta      *dpmeta; 
+    struct TPCH_Update *tpch_update; 
     int          numDelta;           /* totem: number of delta we may have 
                                       *  (TODO: this is a temporary solution) */ 
     bool       leftChildExist; 
@@ -928,7 +926,8 @@ typedef struct PlanState
 	ExprContext *ps_ExprContext;	/* node's expression-evaluation context */
 	ProjectionInfo *ps_ProjInfo;	/* info for doing tuple projection */
 
-    IncInfo *ps_IncInfo;            /* totem: info struct for incremental processing */
+    struct IncInfo *ps_IncInfo;            /* totem: info struct for incremental processing */
+    struct IncInfo *ps_IncInfo_slave;      /* totem: info struct for changing plan */
     PullAction chgAction;           /* totem: used by Rescan */
     bool    isDelta;                /* totem: is in delta processing */
 } PlanState;
@@ -1041,7 +1040,7 @@ typedef struct ModifyTableState
 	/* Per plan/partition tuple conversion */
 
     /*totem: add tuple queue writer*/
-    IncTupQueueWriter *tq_writer; 
+    struct IncTupQueueWriter *tq_writer; 
 } ModifyTableState;
 
 /* ----------------
@@ -1155,7 +1154,7 @@ typedef struct ScanState
 	Relation	        ss_currentRelation;
 	HeapScanDesc        ss_currentScanDesc;
 	TupleTableSlot      *ss_ScanTupleSlot;
-    IncTupQueueReader   *tq_reader; /* totem: memory buffer to hold delta data */
+    struct IncTupQueueReader   *tq_reader; /* totem: memory buffer to hold delta data */
 } ScanState;
 
 /* ----------------
@@ -1663,9 +1662,10 @@ typedef struct NestLoopState
 	bool		nl_MatchedOuter;
 	TupleTableSlot          *nl_NullInnerTupleSlot;
     struct HashJoinState    *nl_hj; 
-    int         nl_JoinState;  
+    int         nl_JoinState;
+    PullAction  nl_rescan_action;  /* totem: pull action */
     bool        nl_useHash;        /* totem: use hash join for delta or not */
-    bool        nl_hashBuild;      /* totem: is hash built or not ? */
+    bool        nl_keep;           /* totem: keep left input or not */
 } NestLoopState;
 
 /* ----------------
@@ -1764,11 +1764,18 @@ typedef struct HashJoinState
 	TupleTableSlot *hj_NullOuterTupleSlot;
 	TupleTableSlot *hj_NullInnerTupleSlot;
 	TupleTableSlot *hj_FirstOuterTupleSlot;
+    HashJoinTable     hj_OuterHashTable; /* totem: outer hash table */
+    struct HashState *hj_OuterHashNode;   /* totem: outer hashstate node for hash table */
+    double      hj_buildtime; 
+    double      hj_scantime;  
+    double      hj_outertime;
+    double      hj_innertime;
 	int			hj_JoinState;
 	bool		hj_MatchedOuter;
 	bool		hj_OuterNotEmpty;
     bool        hj_isDelta;         /* totem: whether we are in delta processing */
-    bool        hj_isComplete;      /* totem: wehter we complete the join */
+    bool        hj_isComplete;      /* totem: whether we complete the join */
+    bool        hj_keep;            /* totem: wehther we keep the input of the outer subtree */
 } HashJoinState;
 
 
@@ -1791,6 +1798,8 @@ typedef struct MaterialState
 	ScanState	ss;				/* its first field is NodeTag */
 	int			eflags;			/* capability flags to pass to tuplestore */
 	bool		eof_underlying; /* reached end of underlying plan? */
+    bool        keep;           /* totem: whether keep or not */
+    bool        buffered;       /* totem: did we buffer tuples or not */ 
 	Tuplestorestate *tuplestorestate;
 } MaterialState;
 

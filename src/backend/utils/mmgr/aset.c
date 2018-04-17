@@ -870,7 +870,10 @@ AllocSetFree(MemoryContext context, void *pointer)
 			block->freeptr != block->endptr ||
 			block->freeptr != ((char *) block) +
 			(chunk->size + ALLOC_BLOCKHDRSZ + ALLOC_CHUNKHDRSZ))
+        {
+            elog(NOTICE, "what's going on here"); 
 			elog(ERROR, "could not find block containing chunk %p", chunk);
+        }
 
 		/* OK, remove block from aset's list and free it */
 		if (block->prev)

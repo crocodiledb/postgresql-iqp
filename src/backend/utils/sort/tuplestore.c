@@ -559,6 +559,17 @@ tuplestore_ateof(Tuplestorestate *state)
 	return state->readptrs[state->activeptr].eof_reached;
 }
 
+/* 
+ * tuplestore_getusedmem
+ *      totem: get the amount of used memory 
+ *
+ * */
+int 
+tuplestore_getusedmem(Tuplestorestate *state)
+{
+    return ((state->allowedMem - state->availMem + 1023) / 1024);
+}
+
 /*
  * Grow the memtuples[] array, if possible within our memory constraint.  We
  * must not exceed INT_MAX tuples in memory or the caller-provided memory

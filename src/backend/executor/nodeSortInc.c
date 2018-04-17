@@ -17,6 +17,7 @@
 #include "utils/tuplesort.h"
 
 #include "executor/incmeta.h"
+#include "access/htup_details.h"
 
 static void ExecCompactSort(SortState *node);
 
@@ -263,12 +264,12 @@ void
 ExecResetSortState(SortState * node)
 {
     IncInfo *incInfo = node->ss.ps.ps_IncInfo; 
-    if (incInfo->leftIncState == STATE_DROP) 
+    if (incInfo->incState[LEFT_STATE] == STATE_DROP) 
     {
         tuplesort_end(node->tuplesortstate); 
         node->tuplesortstate = NULL; 
     }
-    else if (incInfo->leftIncState == STATE_KEEPMEM)
+    else if (incInfo->incState[LEFT_STATE] == STATE_KEEPMEM)
     {
         tuplesort_rescan((Tuplesortstate *) node->tuplesortstate);
         tuplesort_reverttoheap((Tuplesortstate *) node->tuplesortstate);
@@ -294,16 +295,26 @@ ExecInitSortDelta(SortState * node)
 }
 
 int
-ExecSortMemoryCost(SortState * node)
+ExecSortMemoryCost(SortState * node, bool estimate)
 {
-    int memory_cost = 0; 
-    Tuplesortstate * temp = (Tuplesortstate *) (node->tuplesortstate); 
-    if (temp != NULL)
-        memory_cost += tuplesort_getusedmem(temp);
+    Plan *plan = node->ss.ps.plan; 
 
-    temp = (Tuplesortstate *) node->stashedstate; 
-    if (temp != NULL)
-        memory_cost += tuplesort_getusedmem(temp);
+    int memory_cost = 0; 
+    if (estimate) 
+    {
+        double input_bytes = plan->plan_rows * (MAXALIGN(plan->plan_width) + MAXALIGN(SizeofHeapTupleHeader)); 
+        memory_cost = (int) ((input_bytes +1023)/1024); 
+    }
+    else
+    {
+        Tuplesortstate * temp = (Tuplesortstate *) (node->tuplesortstate); 
+        if (temp != NULL)
+            memory_cost += tuplesort_getusedmem(temp);
+    
+        temp = (Tuplesortstate *) node->stashedstate; 
+        if (temp != NULL)
+            memory_cost += tuplesort_getusedmem(temp);
+    }
 
     return memory_cost; 
 }

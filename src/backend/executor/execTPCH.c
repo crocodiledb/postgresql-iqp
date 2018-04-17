@@ -80,10 +80,12 @@ BuildTPCHUpdate(char *tablenames)
         else
             elog(ERROR, "Unrecognized table name %s", name); 
 
-        update->update_tables[i] = (char *) palloc(strlen(name)); 
+        update->update_tables[i] = (char *) palloc(strlen(name) + 1); 
+        update->update_tables[i][strlen(name)] = 0; 
         strncpy(update->update_tables[i], name, strlen(name));
 
-        update->update_commands[i] = (char *) palloc(strlen(GEN_DELTA) + strlen(name)); 
+        update->update_commands[i] = (char *) palloc(strlen(GEN_DELTA) + strlen(name) + 1); 
+        update->update_commands[i][strlen(GEN_DELTA) + strlen(name)] = 0; 
         strncpy(update->update_commands[i], GEN_DELTA, strlen(GEN_DELTA)); 
         strncpy(update->update_commands[i] + strlen(GEN_DELTA), name, strlen(name)); 
 

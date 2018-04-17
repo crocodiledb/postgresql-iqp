@@ -31,6 +31,7 @@ lib*dll.def
 lib*.pc
 *TAGS
 *swp
+tags
 
 # Local excludes in root directory
 /GNUmakefile

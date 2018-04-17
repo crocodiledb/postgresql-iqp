@@ -12,18 +12,12 @@
 #ifndef INCINFO_H
 #define INCINFO_H 
 
-#include "nodes/execnodes.h"
+#include "postgres.h"
 
-typedef enum DecisionMethod
-{
-    DM_DP,
-    DM_TOPDOWN,
-    DM_BOTTOMUP,
-    DM_MEMSMALLFIRST,
-    DM_MEMBIGFIRST
-}DecisionMethod; 
+struct PlanState; 
+struct DPMeta;
 
-typedef void *(*ExecDPNode) (struct EState *estate, int i, int j);
+typedef void *(*ExecDPNode) (struct DPMeta *dpmeta, int i, int j, struct IncInfo *incInfo);
 
 /*
  * Helpful Macros
@@ -40,8 +34,16 @@ typedef enum IncState
 {
     STATE_DROP,
     STATE_KEEPMEM, 
-    STATE_KEEPDISK 
+    STATE_KEEPDISK, 
+    STATE_KEEPMIX, 
 } IncState; 
+
+/*
+ * Max number of possible state 
+ * */
+#define MAX_STATE 2
+#define LEFT_STATE 0
+#define RIGHT_STATE 1
 
 /*
  * PullAction
@@ -58,13 +60,33 @@ typedef enum PullAction
     PULL_BATCH_DELTA
 } PullAction; 
 
+/*
+ * IncTag
+ *
+ * */
+
+typedef enum Inc_Tag
+{
+    INC_INVALID, 
+    INC_HASHJOIN,
+    INC_MERGEJOIN,
+    INC_NESTLOOP,
+    INC_AGGHASH,
+    INC_AGGSORT,
+    INC_SORT,
+    INC_MATERIAL,
+    INC_SEQSCAN,
+    INC_INDEXSCAN,
+    INC_TAG_NUM
+} Inc_Tag; 
 
 /*
  * Info struct for incremental processing 
  */
 
-typedef struct IncInfo {
-
+typedef struct IncInfo 
+{
+    Inc_Tag type; 
     struct PlanState *ps; 
 
     /* Pointers to left/right/parent subtrees. 
@@ -82,21 +104,22 @@ typedef struct IncInfo {
      * compute_cost is initialized as the estimated cost in plan tree 
      */
     ExecDPNode execDPNode; 
-    int memory_cost; 
     int compute_cost;
-    int prepare_cost;  
+    int memory_cost[MAX_STATE]; 
+    int prepare_cost[MAX_STATE];
+    int delta_cost[MAX_STATE];
+    int keep_cost[MAX_STATE];  
 
-    /* Does left or right substrees have deltas */
+    /* Does left or right substrees have deltas; will only be used in the compile time */
     bool    leftUpdate; 
     bool    rightUpdate; 
 
-    /* Pull actions  */
+    /* Pull actions: will be used in the batch/delta execution */
     PullAction leftAction; 
     PullAction rightAction; 
 
-    /* IncState */
-    IncState leftIncState; 
-    IncState rightIncState; 
+    /* IncState: will be used in the delta execution */
+    IncState incState[MAX_STATE]; 
 
 } IncInfo; 
  

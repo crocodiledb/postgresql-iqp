@@ -555,7 +555,7 @@ ExecInitHashJoin(HashJoin *node, EState *estate, int eflags)
      */
     if (estate->es_incremental && estate->es_isSelect) 
     {
-        ExecInitHashJoinInc(hjstate);
+        ExecInitHashJoinInc(hjstate, estate, eflags);
         hjstate->js.ps.ExecProcNode = ExecHashJoinInc;
     } 
     else 

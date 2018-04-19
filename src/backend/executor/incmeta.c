@@ -29,14 +29,16 @@
 
 #include "miscadmin.h"
 
-#define DELTA_THRESHOLD 2
+#include <math.h>
+
+#define DELTA_THRESHOLD 10
 
 bool enable_incremental;
 int  memory_budget;     /* kB units*/
 DecisionMethod decision_method;
 
 bool use_material = true; 
-bool use_sym_hashjoin = true; 
+bool use_sym_hashjoin = true;  
 
 char *incTagName[INC_TAG_NUM] = {"INVALID", "HASHJOIN", "MERGEJOIN", "NESTLOOP", "AGGHASH", "AGGSORT", 
     "SORT", "MATERIAL", "SEQSCAN", "INDEXSCAN"}; 
@@ -614,8 +616,11 @@ ExecWaitUpdate(EState *estate)
         
         numDelta = GetTQUpdate(tq_pool); 
 
-        if (numDelta >= threshold)
+        if (numDelta >= threshold) 
+        {
+            elog(NOTICE, "delta %d", numDelta); 
             break;
+        }
 
        sleep(1); 
     }
@@ -672,17 +677,17 @@ ExecCollectCostInfo(IncInfo *incInfo, bool compute, bool memory, bool estimate)
                 incInfo->keep_cost[LEFT_STATE] = 0; 
                 if (incInfo->rightUpdate && !incInfo->leftUpdate)
                 {
-                    incInfo->delta_cost[LEFT_STATE] = DEFAULT_CPU_OPERATOR_COST * num_hashclauses * inner_delta; 
-                    incInfo->delta_cost[RIGHT_STATE] = DEFAULT_CPU_OPERATOR_COST * num_hashclauses * outerPlan->plan_rows; 
+                    incInfo->delta_cost[LEFT_STATE] = ceil(DEFAULT_CPU_OPERATOR_COST * num_hashclauses * inner_delta); 
+                    incInfo->delta_cost[RIGHT_STATE] = ceil(DEFAULT_CPU_OPERATOR_COST * num_hashclauses * outerPlan->plan_rows); 
                 }
                 else if (incInfo->leftUpdate && !incInfo->rightUpdate)
                 {
-                    incInfo->delta_cost[RIGHT_STATE] = DEFAULT_CPU_OPERATOR_COST * num_hashclauses * outer_delta;
+                    incInfo->delta_cost[RIGHT_STATE] = ceil(DEFAULT_CPU_OPERATOR_COST * num_hashclauses * outer_delta);
                 }
                 else if (incInfo->leftUpdate && incInfo->rightUpdate)
                 {
-                    incInfo->delta_cost[LEFT_STATE]  = DEFAULT_CPU_OPERATOR_COST * num_hashclauses * (inner_delta + outer_delta);
-                    incInfo->delta_cost[RIGHT_STATE] = DEFAULT_CPU_OPERATOR_COST * num_hashclauses * (outer_delta + outerPlan->plan_rows);
+                    incInfo->delta_cost[LEFT_STATE]  = ceil(DEFAULT_CPU_OPERATOR_COST * num_hashclauses * (inner_delta + outer_delta));
+                    incInfo->delta_cost[RIGHT_STATE] = ceil(DEFAULT_CPU_OPERATOR_COST * num_hashclauses * (outer_delta + outerPlan->plan_rows));
                 }
             }
             if (memory)
@@ -714,17 +719,17 @@ ExecCollectCostInfo(IncInfo *incInfo, bool compute, bool memory, bool estimate)
                 incInfo->keep_cost[LEFT_STATE] = 0; 
                 if (incInfo->rightUpdate && !incInfo->leftUpdate)
                 {
-                    incInfo->delta_cost[LEFT_STATE] = DEFAULT_CPU_OPERATOR_COST * num_hashclauses * inner_delta; 
-                    incInfo->delta_cost[RIGHT_STATE] = DEFAULT_CPU_OPERATOR_COST * num_hashclauses * outerPlan->plan_rows; 
+                    incInfo->delta_cost[LEFT_STATE] = ceil(DEFAULT_CPU_OPERATOR_COST * num_hashclauses * inner_delta); 
+                    incInfo->delta_cost[RIGHT_STATE] = ceil(DEFAULT_CPU_OPERATOR_COST * num_hashclauses * outerPlan->plan_rows); 
                 }
                 else if (incInfo->leftUpdate && !incInfo->rightUpdate)
                 {
-                    incInfo->delta_cost[RIGHT_STATE] = DEFAULT_CPU_OPERATOR_COST * num_hashclauses * outer_delta;
+                    incInfo->delta_cost[RIGHT_STATE] = ceil(DEFAULT_CPU_OPERATOR_COST * num_hashclauses * outer_delta);
                 }
                 else if (incInfo->leftUpdate && incInfo->rightUpdate)
                 {
-                    incInfo->delta_cost[LEFT_STATE]  = DEFAULT_CPU_OPERATOR_COST * num_hashclauses * (inner_delta + outer_delta);
-                    incInfo->delta_cost[RIGHT_STATE] = DEFAULT_CPU_OPERATOR_COST * num_hashclauses * (outer_delta + outerPlan->plan_rows);
+                    incInfo->delta_cost[LEFT_STATE]  = ceil(DEFAULT_CPU_OPERATOR_COST * num_hashclauses * (inner_delta + outer_delta));
+                    incInfo->delta_cost[RIGHT_STATE] = ceil(DEFAULT_CPU_OPERATOR_COST * num_hashclauses * (outer_delta + outerPlan->plan_rows));
                 }
             }
 
@@ -739,8 +744,8 @@ ExecCollectCostInfo(IncInfo *incInfo, bool compute, bool memory, bool estimate)
         case INC_INDEXSCAN:
             if (compute)
             {
-                incInfo->prepare_cost[LEFT_STATE] = plan->startup_cost;
-                incInfo->compute_cost = plan->total_cost - plan->startup_cost; 
+                incInfo->prepare_cost[LEFT_STATE] = ceil(plan->startup_cost);
+                incInfo->compute_cost = ceil(plan->total_cost - plan->startup_cost); 
             }
             return;  
             break;
@@ -749,8 +754,8 @@ ExecCollectCostInfo(IncInfo *incInfo, bool compute, bool memory, bool estimate)
             outerPlan = outerPlan(plan); 
             if (compute)
             {
-                incInfo->prepare_cost[LEFT_STATE] = (int)(plan->startup_cost - outerPlan->total_cost); 
-                incInfo->compute_cost = (int)(plan->total_cost - plan->startup_cost); 
+                incInfo->prepare_cost[LEFT_STATE] = (int)(ceil(plan->startup_cost - outerPlan->total_cost)); 
+                incInfo->compute_cost = (int)(ceil(plan->total_cost - plan->startup_cost)); 
             }
             
             if (memory)
@@ -764,8 +769,8 @@ ExecCollectCostInfo(IncInfo *incInfo, bool compute, bool memory, bool estimate)
             outerPlan = outerPlan(plan); 
             if (compute)
             {
-                incInfo->prepare_cost[LEFT_STATE] = (int)(plan->startup_cost - outerPlan->startup_cost); 
-                incInfo->compute_cost = (int)(plan->total_cost - plan->startup_cost); 
+                incInfo->prepare_cost[LEFT_STATE] = (int)(ceil(plan->startup_cost - outerPlan->startup_cost)); 
+                incInfo->compute_cost = (int)(ceil(plan->total_cost - plan->startup_cost)); 
             }
             
             if (memory)
@@ -779,8 +784,8 @@ ExecCollectCostInfo(IncInfo *incInfo, bool compute, bool memory, bool estimate)
             outerPlan = outerPlan(plan); 
             if (compute)
             {
-                incInfo->prepare_cost[LEFT_STATE] = (int)(plan->startup_cost - outerPlan->total_cost); 
-                incInfo->compute_cost = (int)(plan->total_cost - plan->startup_cost); 
+                incInfo->prepare_cost[LEFT_STATE] = (int)(ceil(plan->startup_cost - outerPlan->total_cost)); 
+                incInfo->compute_cost = (int)(ceil(plan->total_cost - plan->startup_cost)); 
             }
 
             if (memory)
@@ -797,7 +802,7 @@ ExecCollectCostInfo(IncInfo *incInfo, bool compute, bool memory, bool estimate)
                 incInfo->prepare_cost[LEFT_STATE] = 0;
                 outerPlan = incInfo->parenttree->ps->lefttree->plan; 
                 incInfo->compute_cost = 0;
-                incInfo->keep_cost[LEFT_STATE] =  (int)(2 * DEFAULT_CPU_OPERATOR_COST * plan_rows);
+                incInfo->keep_cost[LEFT_STATE] =  (int)(ceil(2 * DEFAULT_CPU_OPERATOR_COST * plan_rows));
             }
             if (memory)
             {
@@ -1164,6 +1169,28 @@ ExecInitDelta(PlanState *ps)
             elog(ERROR, "InitDelta unrecognized nodetype: %u", ps->type);
             return; 
     }
+}
+
+bool CheckMatch(bool leftDelta, bool rightDelta, int pullEncoding)
+{
+    int genEncoding = 0;
+    genEncoding |= (leftDelta || rightDelta) << 1; 
+    genEncoding |= (!leftDelta && !rightDelta); 
+
+    return ((genEncoding & pullEncoding) != 0); 
+}
+
+int EncodePullAction(PullAction pullAction)
+{
+    int pullEncoding = 0; 
+    if (pullAction == PULL_BATCH)
+        pullEncoding = 0x1;
+    else if (pullAction == PULL_DELTA)
+        pullEncoding = 0x2;
+    else if (pullAction == PULL_BATCH_DELTA)
+        pullEncoding = 0x3; 
+
+    return pullEncoding; 
 }
 
 

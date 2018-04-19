@@ -3,20 +3,20 @@
 BENCH_HOME=/home/totemtang/IQP/postgresql/pg_scripts/tpch_test
 DELTA_HOME=/home/totemtang/IQP/postgresql/pg_scripts/tpch_delta
 
-INC=on
+INC=off
 dm=dp
 update=lineitem
 
-for query in q8
+for query in q9
 do
-   for update in lineitem supplier
+   for update in orders,supplier
    do 
        for budget in 1500
        do
-           if [ "$INC" == "on" ]
-           then
-               $DELTA_HOME/delete_delta.sh $update
-           fi
+           #if [ "$INC" == "on" ]
+           #then
+           #    $DELTA_HOME/delete_delta.sh $update
+           #fi
 
            let budget=budget*1024
            psql \
@@ -27,7 +27,7 @@ do
              -v v_budget=${budget} \
              -v v_dm=${dm} \
              -v v_update="'${update}'" \
-             -f $BENCH_HOME/$query.sql > /dev/null
+             -f $BENCH_HOME/$query.sql
        done
    done
 done

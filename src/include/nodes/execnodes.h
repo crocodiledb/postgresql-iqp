@@ -1771,6 +1771,7 @@ typedef struct HashJoinState
     double      hj_outertime;
     double      hj_innertime;
 	int			hj_JoinState;
+    int         hj_PullEncoding;    /* totem: encode pull action */
 	bool		hj_MatchedOuter;
 	bool		hj_OuterNotEmpty;
     bool        hj_isDelta;         /* totem: whether we are in delta processing */

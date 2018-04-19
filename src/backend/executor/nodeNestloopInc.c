@@ -47,11 +47,6 @@ static void LinkHJToNL(NestLoopState *nl_state, HashJoinState *hj_state);
 static List* ExtractHashClauses(List *joinclauses); 
 static List* ExtractNonHashClauses(List *joinclauses); 
 
-static bool
-ExecNLScanHashBucket(HashJoinState *hjstate,
-                    ExprContext *econtext, 
-                    bool outer); 
-
 /* ----------------------------------------------------------------
  *		ExecNestLoopIncReal(node)
  *
@@ -219,7 +214,7 @@ ExecNestLoopIncReal(PlanState *pstate)
 
             case NL_SCAN_BUCKET_OUTER:
                 
-                if (!ExecNLScanHashBucket(hjstate, econtext, true))
+                if (!ExecScanHashBucketInc(hjstate, econtext, true))
                 {
                     node->nl_JoinState = NL_NEED_INNER;
                     continue; 
@@ -360,7 +355,7 @@ ExecNestLoopIncReal(PlanState *pstate)
 
             case NL_SCAN_BUCKET_INNER:
 
-                if (!ExecNLScanHashBucket(hjstate, econtext, false))
+                if (!ExecScanHashBucketInc(hjstate, econtext, false))
                 {
                     if (node->nl_rescan_action != PULL_NOTHING)
                         node->nl_JoinState = NL_RESCAN_INNER; 
@@ -659,76 +654,3 @@ ExecNestLoopIncMarkKeep(NestLoopState *nl, IncState state)
 {
     nl->nl_keep = (state != STATE_DROP); 
 }
-
-
-static bool
-ExecNLScanHashBucket(HashJoinState *hjstate,
-                    ExprContext *econtext, 
-                    bool outer)
-{
-	ExprState  *hjclauses = hjstate->hashclauses;
-	HashJoinTuple hashTuple = hjstate->hj_CurTuple;
-	uint32		hashvalue = hjstate->hj_CurHashValue;
-    
-    HashJoinTable hashtable;
-    if (outer) 
-        hashtable = hjstate->hj_OuterHashTable;
-    else
-        hashtable = hjstate->hj_HashTable; 
-
-	/*
-	 * hj_CurTuple is the address of the tuple last returned from the current
-	 * bucket, or NULL if it's time to start scanning a new bucket.
-	 *
-	 * If the tuple hashed to a skew bucket then scan the skew bucket
-	 * otherwise scan the standard hashtable bucket.
-	 */
-	if (hashTuple != NULL)
-		hashTuple = hashTuple->next;
-	else if (hjstate->hj_CurSkewBucketNo != INVALID_SKEW_BUCKET_NO)
-		hashTuple = hashtable->skewBucket[hjstate->hj_CurSkewBucketNo]->tuples;
-	else
-		hashTuple = hashtable->buckets[hjstate->hj_CurBucketNo];
-
-	while (hashTuple != NULL)
-	{
-		if (hashTuple->hashvalue == hashvalue)
-		{
-			TupleTableSlot *temptuple;
-
-		    /* insert hashtable's tuple into exec slot so ExecQual sees it */
-            if (outer)
-            {
-		    	temptuple = ExecStoreMinimalTuple(HJTUPLE_MINTUPLE(hashTuple),
-		    									 hjstate->hj_OuterTupleSlot,
-		    									 false);	/* do not pfree */
-		    	econtext->ecxt_outertuple = temptuple;
-            }
-            else
-            {
- 		    	temptuple = ExecStoreMinimalTuple(HJTUPLE_MINTUPLE(hashTuple),
-		    									 hjstate->hj_HashTupleSlot,
-		    									 false);	/* do not pfree */
-		    	econtext->ecxt_innertuple = temptuple;               
-            }
-
-			/* reset temp memory each time to avoid leaks from qual expr */
-			ResetExprContext(econtext);
-
-			if (ExecQual(hjclauses, econtext))
-			{
-				hjstate->hj_CurTuple = hashTuple;
-				return true;
-			}
-		}
-
-		hashTuple = hashTuple->next;
-	}
-
-	/*
-	 * no match
-	 */
-	return false;
-
-}
-

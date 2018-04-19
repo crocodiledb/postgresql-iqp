@@ -65,6 +65,7 @@ typedef struct HashJoinTupleData
 {
 	struct HashJoinTupleData *next; /* link to next tuple in same bucket */
 	uint32		hashvalue;		/* tuple's hash code */
+    bool        delta; 
 	/* Tuple data, in MinimalTuple format, follows on a MAXALIGN boundary */
 }			HashJoinTupleData;
 

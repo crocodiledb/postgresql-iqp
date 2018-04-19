@@ -37,6 +37,8 @@
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
 
+#include "executor/incmeta.h"
+
 static void ExecHashIncreaseNumBatches(HashJoinTable hashtable);
 void ExecHashIncreaseNumBuckets(HashJoinTable hashtable);
 static void ExecHashBuildSkewHash(HashJoinTable hashtable, Hash *node,
@@ -855,6 +857,7 @@ ExecHashTableInsert(HashJoinTable hashtable,
 		/* Create the HashJoinTuple */
 		hashTupleSize = HJTUPLE_OVERHEAD + tuple->t_len;
 		hashTuple = (HashJoinTuple) dense_alloc(hashtable, hashTupleSize);
+        hashTuple->delta = TupIsDelta(slot); 
 
 		hashTuple->hashvalue = hashvalue;
 		memcpy(HJTUPLE_MINTUPLE(hashTuple), tuple, tuple->t_len);

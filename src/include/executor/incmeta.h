@@ -37,6 +37,7 @@ extern bool use_sym_hashjoin;
 #define TupIsDelta(slot) \
     (((slot)->tts_inc_state & TTS_DELTA) != 0)
 
+
 /*
  * prototypes from functions in executor/execScan.c
  */
@@ -66,6 +67,9 @@ extern TupleTableSlot * ExecNestLoopInc(PlanState *pstate);
 extern void ExecInitHashJoinInc(HashJoinState *hjstate, EState *estate, int eflags); 
 
 extern TupleTableSlot * ExecHashJoinInc(PlanState *pstate);
+
+extern bool ExecScanHashBucketInc(HashJoinState *hjstate, ExprContext *econtext, bool outer); 
+
 
 /*
  * prototypes from functions in executor/nodeSortInc.c
@@ -105,6 +109,10 @@ extern void ExecResetState(PlanState *ps);
 extern void ExecInitDelta(PlanState *ps); 
 
 extern double GetTimeDiff(struct timeval x , struct timeval y); 
+
+extern bool CheckMatch(bool leftDelta, bool rightDelta, int pullEncoding);
+
+extern int EncodePullAction(PullAction pullAction); 
 
 /*
  * prototypes from functions for ExecResetState 

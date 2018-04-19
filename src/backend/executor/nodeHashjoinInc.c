@@ -40,8 +40,6 @@ static TupleTableSlot *ExecHashJoinOuterGetTupleInc(PlanState *outerNode,
 
 static TupleTableSlot *ExecHashJoinReal(PlanState *pstate);
 
-static bool ExecScanOuterHashBucket(HashJoinState *hjstate, ExprContext *econtext); 
-
 void BuildOuterHashNode(HashJoinState *hjstate, EState *estate, int eflags); 
 
 /* ----------------------------------------------------------------
@@ -67,6 +65,7 @@ ExecHashJoinReal(PlanState *pstate)
 	uint32		hashvalue;
 	int			batchno;
 
+    TupleTableSlot *retTupleSlot; 
     TupleTableSlot *innerTupleSlot; 
 
     IncInfo *incInfo = pstate->ps_IncInfo;  
@@ -252,7 +251,7 @@ ExecHashJoinReal(PlanState *pstate)
                  * Now probe the outer hash table if possible
                  */
 
-                if (outerHashTable != NULL)
+                if (outerHashTable != NULL && TupIsDelta(innerTupleSlot))
                 {
 		    		/*
 		    		 * Find the corresponding bucket for this tuple in the main
@@ -278,7 +277,7 @@ ExecHashJoinReal(PlanState *pstate)
 				/*
 				 * Scan the selected hash bucket for matches to current outer
 				 */
-				if (!ExecScanOuterHashBucket(node, econtext))
+				if (!ExecScanHashBucketInc(node, econtext, true))
 				{
 					node->hj_JoinState = HJ_NEED_NEW_INNER;
 					continue;
@@ -302,7 +301,11 @@ ExecHashJoinReal(PlanState *pstate)
 					HeapTupleHeaderSetMatch(HJTUPLE_MINTUPLE(node->hj_CurTuple));
 
 					if (otherqual == NULL || ExecQual(otherqual, econtext))
-						return ExecProject(node->js.ps.ps_ProjInfo);
+                    {
+						retTupleSlot = ExecProject(node->js.ps.ps_ProjInfo);
+                        MarkTupDelta(retTupleSlot, TupIsDelta(econtext->ecxt_innertuple) || TupIsDelta(econtext->ecxt_outertuple)); 
+                        return retTupleSlot; 
+                    }
 					else
 						InstrCountFiltered2(node, 1);
 				}
@@ -386,7 +389,7 @@ ExecHashJoinReal(PlanState *pstate)
 				 * Scan the selected hash bucket for matches to current outer
 				 */
 
-				if (!ExecScanHashBucket(node, econtext))
+				if (!ExecScanHashBucketInc(node, econtext, false))
 				{
 					node->hj_JoinState = HJ_NEED_NEW_OUTER; 
 					continue;
@@ -411,7 +414,9 @@ ExecHashJoinReal(PlanState *pstate)
 
 					if (otherqual == NULL || ExecQual(otherqual, econtext)) 
                     {
-						return ExecProject(node->js.ps.ps_ProjInfo);
+						retTupleSlot =  ExecProject(node->js.ps.ps_ProjInfo);
+                        MarkTupDelta(retTupleSlot, TupIsDelta(econtext->ecxt_innertuple) || TupIsDelta(econtext->ecxt_outertuple)); 
+                        return retTupleSlot; 
                     }
 					else
 						InstrCountFiltered2(node, 1);
@@ -491,14 +496,20 @@ ExecHashJoinOuterGetTupleInc(PlanState *outerNode,
 	return slot;
 }
 
-static bool
-ExecScanOuterHashBucket(HashJoinState *hjstate,
-				        ExprContext *econtext)
+bool
+ExecScanHashBucketInc(HashJoinState *hjstate,
+                      ExprContext *econtext, 
+                      bool outer)
 {
 	ExprState  *hjclauses = hjstate->hashclauses;
-	HashJoinTable hashtable = hjstate->hj_OuterHashTable;
 	HashJoinTuple hashTuple = hjstate->hj_CurTuple;
 	uint32		hashvalue = hjstate->hj_CurHashValue;
+    
+    HashJoinTable hashtable;
+    if (outer) 
+        hashtable = hjstate->hj_OuterHashTable;
+    else
+        hashtable = hjstate->hj_HashTable; 
 
 	/*
 	 * hj_CurTuple is the address of the tuple last returned from the current
@@ -518,19 +529,35 @@ ExecScanOuterHashBucket(HashJoinState *hjstate,
 	{
 		if (hashTuple->hashvalue == hashvalue)
 		{
-			TupleTableSlot *outertuple;
+			TupleTableSlot *temptuple;
 
-			/* insert hashtable's tuple into exec slot so ExecQual sees it */
-			outertuple = ExecStoreMinimalTuple(HJTUPLE_MINTUPLE(hashTuple),
-											 hjstate->hj_OuterTupleSlot,
-											 false);	/* do not pfree */
-			econtext->ecxt_outertuple = outertuple;
+		    /* insert hashtable's tuple into exec slot so ExecQual sees it */
+            if (outer)
+            {
+		    	temptuple = ExecStoreMinimalTuple(HJTUPLE_MINTUPLE(hashTuple),
+		    									 hjstate->hj_OuterTupleSlot,
+		    									 false);	/* do not pfree */
+		    	econtext->ecxt_outertuple = temptuple;
+            }
+            else
+            {
+                if (!CheckMatch(TupIsDelta(econtext->ecxt_outertuple), hashTuple->delta, hjstate->hj_PullEncoding)) 
+                {
+                    hashTuple = hashTuple->next;
+                    continue; 
+                }
+ 		    	temptuple = ExecStoreMinimalTuple(HJTUPLE_MINTUPLE(hashTuple),
+		    									 hjstate->hj_HashTupleSlot,
+		    									 false);	/* do not pfree */
+		    	econtext->ecxt_innertuple = temptuple;               
+            }
 
 			/* reset temp memory each time to avoid leaks from qual expr */
 			ResetExprContext(econtext);
 
 			if (ExecQual(hjclauses, econtext))
 			{
+                MarkTupDelta(temptuple, hashTuple->delta); 
 				hjstate->hj_CurTuple = hashTuple;
 				return true;
 			}
@@ -543,6 +570,7 @@ ExecScanOuterHashBucket(HashJoinState *hjstate,
 	 * no match
 	 */
 	return false;
+
 }
 
 void 
@@ -605,6 +633,7 @@ ExecHashJoinInc(PlanState *pstate)
 void 
 ExecInitHashJoinInc(HashJoinState *node, EState *estate, int eflags)
 {
+    node->hj_PullEncoding = EncodePullAction(PULL_BATCH);
     node->hj_isComplete = false;
     node->hj_isDelta = false;
     node->hj_keep = true;
@@ -683,6 +712,13 @@ ExecResetHashJoinState(HashJoinState * node)
 void
 ExecInitHashJoinDelta(HashJoinState * node)
 {
+    IncInfo * incInfo = node->js.ps.ps_IncInfo; 
+    IncInfo * parent = incInfo->parenttree; 
+    if (parent->lefttree == incInfo)
+        node->hj_PullEncoding = EncodePullAction(parent->leftAction);
+    else
+        node->hj_PullEncoding = EncodePullAction(parent->rightAction); 
+
     PlanState *innerPlan; 
     PlanState *outerPlan; 
            

@@ -446,7 +446,8 @@ ExecScanInc(ScanState *node,
         {
             if (incInfo->leftAction == PULL_BATCH || incInfo->leftAction == PULL_BATCH_DELTA)
             {
-                slot = ExecScanFetch(node, accessMtd, recheckMtd); 
+                slot = ExecScanFetch(node, accessMtd, recheckMtd);
+                MarkTupDelta(slot, false); 
                 if (TupIsNull(slot))
                 {
                     if (incInfo->leftAction == PULL_BATCH_DELTA)
@@ -498,7 +499,9 @@ ExecScanInc(ScanState *node,
 
             
         if (incInfo->leftAction == PULL_BATCH || incInfo->leftAction == PULL_BATCH_DELTA)
+        {
             slot = ExecScanFetch(node, accessMtd, recheckMtd);
+        }
         else if (incInfo->leftAction == PULL_DELTA) 
         {
             isDelta = true; 

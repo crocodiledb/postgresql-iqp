@@ -196,7 +196,7 @@ ExecNestLoopIncReal(PlanState *pstate)
             	    innerHashTable->totalTuples += 1;
             	}
 
-                if (outerHashTable != NULL)
+                if (outerHashTable != NULL && TupIsDelta(innerTupleSlot))
                 {
                     hjstate->hj_CurHashValue = hashvalue;
 		    		ExecHashGetBucketAndBatch(outerHashTable, hashvalue,
@@ -223,7 +223,11 @@ ExecNestLoopIncReal(PlanState *pstate)
         		if (joinqual == NULL || ExecQual(joinqual, econtext))
         		{
         			if (otherqual == NULL || ExecQual(otherqual, econtext))
-        				return ExecProject(node->js.ps.ps_ProjInfo);
+                    {
+        				retTupleSlot = ExecProject(node->js.ps.ps_ProjInfo);
+                        MarkTupDelta(retTupleSlot, TupIsDelta(econtext->ecxt_innertuple) || TupIsDelta(econtext->ecxt_outertuple));
+                        return retTupleSlot;  
+                    }
         			else
         				InstrCountFiltered2(node, 1);
         		}
@@ -368,7 +372,11 @@ ExecNestLoopIncReal(PlanState *pstate)
         		if (joinqual == NULL || ExecQual(joinqual, econtext))
         		{
         			if (otherqual == NULL || ExecQual(otherqual, econtext))
-        				return ExecProject(node->js.ps.ps_ProjInfo);
+                    {
+        				retTupleSlot = ExecProject(node->js.ps.ps_ProjInfo);
+                        MarkTupDelta(retTupleSlot, TupIsDelta(econtext->ecxt_innertuple) || TupIsDelta(econtext->ecxt_outertuple)); 
+                        return retTupleSlot; 
+                    }
         			else
         				InstrCountFiltered2(node, 1);
         		}
@@ -392,7 +400,11 @@ ExecNestLoopIncReal(PlanState *pstate)
         		if (joinqual == NULL || ExecQual(joinqual, econtext))
         		{
         			if (otherqual == NULL || ExecQual(otherqual, econtext))
-        				return ExecProject(node->js.ps.ps_ProjInfo);
+                    {
+        				retTupleSlot = ExecProject(node->js.ps.ps_ProjInfo);
+                        MarkTupDelta(retTupleSlot, TupIsDelta(econtext->ecxt_innertuple) || TupIsDelta(econtext->ecxt_outertuple)); 
+                        return retTupleSlot; 
+                    }
         			else
         				InstrCountFiltered2(node, 1);
         		}
@@ -472,6 +484,8 @@ ExecInitNestLoopInc(NestLoopState *node, int eflags)
     node->nl_hj = hj_state; 
 
     BuildOuterHashNode(hj_state, estate, eflags); 
+
+    hj_state->hj_PullEncoding = EncodePullAction(PULL_BATCH);
 }
 
 
@@ -521,6 +535,11 @@ void
 ExecInitNestLoopDelta(NestLoopState * node)
 {
     IncInfo *incInfo = node->js.ps.ps_IncInfo; 
+    IncInfo * parent = incInfo->parenttree; 
+    if (parent->lefttree == incInfo)
+        node->nl_hj->hj_PullEncoding = EncodePullAction(parent->leftAction);
+    else
+        node->nl_hj->hj_PullEncoding = EncodePullAction(parent->rightAction); 
 
     if (node->nl_useHash && (incInfo->rightAction == PULL_BATCH_DELTA || incInfo->rightAction == PULL_DELTA))
         node->nl_JoinState = NL_BUILD_HASHTABLE; 

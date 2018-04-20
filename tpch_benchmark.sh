@@ -7,16 +7,20 @@ INC=off
 dm=dp
 update=lineitem
 
-for query in q9
+for query in q7
 do
-   for update in orders,supplier
+   for update in orders,lineitem
    do 
        for budget in 1500
        do
-           #if [ "$INC" == "on" ]
-           #then
-           #    $DELTA_HOME/delete_delta.sh $update
-           #fi
+           if [ "$INC" == "on" ]
+           then
+               IFS=',' read -r -a update_array <<< "${update}"
+               for oneupdate in "${update_array[@]}"
+               do
+                   $DELTA_HOME/delete_delta.sh $oneupdate
+               done
+           fi
 
            let budget=budget*1024
            psql \

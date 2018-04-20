@@ -857,6 +857,8 @@ ExecHashTableInsert(HashJoinTable hashtable,
 		/* Create the HashJoinTuple */
 		hashTupleSize = HJTUPLE_OVERHEAD + tuple->t_len;
 		hashTuple = (HashJoinTuple) dense_alloc(hashtable, hashTupleSize);
+
+        /* totem: mark delta */
         hashTuple->delta = TupIsDelta(slot); 
 
 		hashTuple->hashvalue = hashvalue;

@@ -124,6 +124,7 @@ typedef enum NodeTag
 	T_MergeJoinState,
 	T_HashJoinState,
 	T_MaterialState,
+    T_MaterialIncState, /*totem*/
 	T_SortState,
 	T_GroupState,
 	T_AggState,

@@ -116,6 +116,9 @@
 #include "nodes/nodeFuncs.h"
 #include "miscadmin.h"
 
+/*totem*/
+#include "executor/incmeta.h"
+
 
 static TupleTableSlot *ExecProcNodeFirst(PlanState *node);
 static TupleTableSlot *ExecProcNodeInstr(PlanState *node);
@@ -674,6 +677,13 @@ ExecEndNode(PlanState *node)
 		case T_MaterialState:
 			ExecEndMaterial((MaterialState *) node);
 			break;
+
+            /*
+             * materialization node for INC
+             */
+        case T_MaterialIncState:
+			ExecEndMaterialInc((MaterialIncState *) node);
+            break; 
 
 		case T_SortState:
 			ExecEndSort((SortState *) node);

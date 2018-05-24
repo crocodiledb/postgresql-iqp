@@ -809,7 +809,7 @@ ExecCollectCostInfo(IncInfo *incInfo, bool compute, bool memory, bool estimate)
                 if (plan == NULL)
                     incInfo->memory_cost[LEFT_STATE] = (plan_rows * (MAXALIGN(plan_width) + MAXALIGN(SizeofHeapTupleHeader)) + 1023) / 1024;
                 else
-                    incInfo->memory_cost[LEFT_STATE] = ExecMaterialIncMemoryCost((MaterialState *) ps, estimate); 
+                    incInfo->memory_cost[LEFT_STATE] = ExecMaterialIncMemoryCost((MaterialIncState *) ps, estimate); 
             }
             ExecCollectCostInfo(incInfo->lefttree, compute, memory, estimate); 
             break; 
@@ -840,12 +840,12 @@ ExecDecideState(DPMeta *dpmeta, IncInfo **incInfoArray, int numIncInfo, int incM
     }
 }
 
-MaterialState *ExecBuildMaterialInc(EState *estate); 
+MaterialIncState *ExecBuildMaterialInc(EState *estate); 
 
 static void
 ExecModifyPlan(EState *estate)
 {
-    MaterialState *ms; 
+    MaterialIncState *ms; 
     IncInfo **incInfoArray_slave = estate->es_incInfo_slave; 
     IncInfo *incInfo_slave; 
 
@@ -880,7 +880,7 @@ ExecModifyPlan(EState *estate)
             }
             else /* Material node exists */
             {
-                ExecMaterialIncMarkKeep((MaterialState *)incInfo_slave->ps, incInfo_slave->incState[LEFT_STATE]); 
+                ExecMaterialIncMarkKeep((MaterialIncState *)incInfo_slave->ps, incInfo_slave->incState[LEFT_STATE]); 
                 if (incInfo->incState[LEFT_STATE] == STATE_DROP && incInfo_slave->incState[LEFT_STATE] == STATE_DROP) /* Drop the Material node */
                 {
                     IncDeleteNode(incInfo_slave->parenttree->ps, true); 
@@ -914,8 +914,8 @@ ExecFinalizePlan(EState *estate)
 
         if (incInfo->type == INC_MATERIAL && incInfo->ps != NULL)
         {
-            ExecMaterialIncMarkKeep((MaterialState *)incInfo->ps, STATE_DROP); 
-            if (incInfo->incState[LEFT_STATE] == STATE_DROP) /* Drop the Material node */
+            ExecMaterialIncMarkKeep((MaterialIncState *)incInfo->ps, STATE_DROP); 
+            if (incInfo->incState[LEFT_STATE] == STATE_DROP) /* Drop the MaterialInc node */
             {
                 IncDeleteNode(incInfo->parenttree->ps, true); 
                 incInfo->ps = NULL; 
@@ -938,7 +938,7 @@ ExecGenPullAction(IncInfo *incInfo, PullAction parentAction)
         incInfo->leftAction = parentAction;
         incInfo->rightAction = parentAction; 
     }
-    else if (incInfo->righttree == NULL) /* Agg, Sort, or Material operator */
+    else if (incInfo->righttree == NULL) /* Agg, Sort, or MaterialInc operator */
     {
         switch (incInfo->type) 
         { 
@@ -1117,8 +1117,8 @@ ExecResetState(PlanState *ps)
             ExecResetSortState((SortState *) ps); 
             break;
 
-        case T_MaterialState:
-            ExecResetMaterialIncState((MaterialState *) ps);
+        case T_MaterialIncState:
+            ExecResetMaterialIncState((MaterialIncState *) ps);
             break; 
         
         default:
@@ -1157,8 +1157,8 @@ ExecInitDelta(PlanState *ps)
             ExecInitAggDelta((AggState *) ps); 
             break;
 
-        case T_MaterialState:
-            ExecInitMaterialIncDelta((MaterialState *) ps); 
+        case T_MaterialIncState:
+            ExecInitMaterialIncDelta((MaterialIncState *) ps); 
             break; 
 
         case T_SortState:

@@ -37,9 +37,9 @@
 static TupleTableSlot *			/* result tuple from subplan */
 ExecMaterialInc(PlanState *pstate)
 {
-	MaterialState *node = castNode(MaterialState, pstate);
+	MaterialIncState *node = castNode(MaterialIncState, pstate);
 	EState	   *estate;
-	Tuplestorestate *tuplestorestate;
+	Densestorestate *tuplestorestate;
 	bool		eof_tuplestore;
 	TupleTableSlot *slot;
 
@@ -56,13 +56,12 @@ ExecMaterialInc(PlanState *pstate)
 	 */
 	if (tuplestorestate == NULL && node->keep )
 	{
-		tuplestorestate = tuplestore_begin_heap(true, false, work_mem);
-		tuplestore_set_eflags(tuplestorestate, node->eflags);
+		tuplestorestate = densestore_begin_heap(work_mem);
 		node->tuplestorestate = tuplestorestate;
 	}
 
 	eof_tuplestore = (tuplestorestate == NULL) ||
-		tuplestore_ateof(tuplestorestate);
+		densestore_ateof(tuplestorestate);
 
 	/*
 	 * If we can fetch another tuple from the tuplestore, return it.
@@ -70,7 +69,7 @@ ExecMaterialInc(PlanState *pstate)
 	slot = node->ss.ps.ps_ResultTupleSlot;
 	if (!eof_tuplestore)
 	{
-		if (tuplestore_gettupleslot(tuplestorestate, true, false, slot))
+		if (densestore_gettupleslot(tuplestorestate, slot))
 			return slot;
 		eof_tuplestore = true;
 	}
@@ -81,6 +80,7 @@ ExecMaterialInc(PlanState *pstate)
 
 	PlanState  *outerNode;
 	TupleTableSlot *outerslot;
+
 
 	/*
 	 * We can only get here with forward==true, so no need to worry about
@@ -104,7 +104,8 @@ ExecMaterialInc(PlanState *pstate)
 	 * move forward over the added tuple.  This is what we want.
 	 */
 	if (node->keep)
-		tuplestore_puttupleslot(tuplestorestate, outerslot);
+		densestore_puttupleslot(tuplestorestate, outerslot);
+
 
 	/*
 	 * We can just return the subplan's returned tuple, without copying.
@@ -116,20 +117,21 @@ ExecMaterialInc(PlanState *pstate)
  *		ExecInitMaterial
  * ----------------------------------------------------------------
  */
-MaterialState *
+MaterialIncState *
 ExecInitMaterialInc(Material *node, EState *estate, int eflags)
 {
-	MaterialState *matstate;
+	MaterialIncState *matstate;
 	PlanState  *outerPS;
 	TupleDesc	tupDesc;
 
 	/*
 	 * create state structure
 	 */
-	matstate = makeNode(MaterialState);
+	matstate = makeNode(MaterialIncState);
 	matstate->ss.ps.plan = (Plan *) node;
 	matstate->ss.ps.state = estate;
 	matstate->ss.ps.ExecProcNode = ExecMaterialInc;
+
 
 	/*
 	 * We must have a tuplestore buffering the subplan output to do backward
@@ -205,7 +207,7 @@ ExecInitMaterialInc(Material *node, EState *estate, int eflags)
  * ----------------------------------------------------------------
  */
 void
-ExecEndMaterialInc(MaterialState *node)
+ExecEndMaterialInc(MaterialIncState *node)
 {
 	/*
 	 * clean out the tuple table
@@ -216,7 +218,7 @@ ExecEndMaterialInc(MaterialState *node)
 	 * Release tuplestore resources
 	 */
 	if (node->tuplestorestate != NULL)
-		tuplestore_end(node->tuplestorestate);
+		densestore_end(node->tuplestorestate);
 	node->tuplestorestate = NULL;
 
 	/*
@@ -232,7 +234,7 @@ ExecEndMaterialInc(MaterialState *node)
  * ----------------------------------------------------------------
  */
 void
-ExecReScanMaterialInc(MaterialState *node)
+ExecReScanMaterialInc(MaterialIncState *node)
 {
 	PlanState  *outerPlan = outerPlanState(node);
 
@@ -261,14 +263,14 @@ ExecReScanMaterialInc(MaterialState *node)
 		if (outerPlan->chgParam != NULL ||
 			(node->eflags & EXEC_FLAG_REWIND) == 0)
 		{
-			tuplestore_end(node->tuplestorestate);
+			densestore_end(node->tuplestorestate);
 			node->tuplestorestate = NULL;
 			if (outerPlan->chgParam == NULL)
 				ExecReScan(outerPlan);
 			node->eof_underlying = false;
 		}
 		else
-			tuplestore_rescan(node->tuplestorestate);
+			densestore_rescan(node->tuplestorestate);
 	}
 	else
 	{
@@ -293,13 +295,13 @@ ExecReScanMaterialInc(MaterialState *node)
  */
 
 void
-ExecResetMaterialIncState(MaterialState * node)
+ExecResetMaterialIncState(MaterialIncState * node)
 {
     IncInfo *incInfo = node->ss.ps.ps_IncInfo;
     if (incInfo->incState[LEFT_STATE] == STATE_DROP) 
     {	
         if (node->tuplestorestate != NULL)
-            tuplestore_end(node->tuplestorestate);
+            densestore_end(node->tuplestorestate);
 	    node->tuplestorestate = NULL;
     } 
     else if (incInfo->incState[LEFT_STATE] == STATE_KEEPDISK)
@@ -324,10 +326,10 @@ ExecResetMaterialIncState(MaterialState * node)
  */
 
 void
-ExecInitMaterialIncDelta(MaterialState * node)
+ExecInitMaterialIncDelta(MaterialIncState * node)
 {
     if (node->tuplestorestate != NULL)
-        tuplestore_rescan(node->tuplestorestate);
+        densestore_rescan(node->tuplestorestate);
 
     PlanState *outerPlan; 
     outerPlan = outerPlanState(node); 
@@ -344,7 +346,7 @@ ExecInitMaterialIncDelta(MaterialState * node)
  */
 
 int 
-ExecMaterialIncMemoryCost(MaterialState * node, bool estimate)
+ExecMaterialIncMemoryCost(MaterialIncState * node, bool estimate)
 {
     Plan *plan = node->ss.ps.plan; 
     int memory_cost = 0; 
@@ -354,17 +356,17 @@ ExecMaterialIncMemoryCost(MaterialState * node, bool estimate)
         return (int) ((input_bytes +1023)/1024); 
     }
     else
-        return tuplestore_getusedmem(node->tuplestorestate);
+        return (densestore_getusedmem(node->tuplestorestate) + 1023)/1024;
 }
 
 /*
- * Build MaterialState  
+ * Build MaterialIncState  
  * */
-MaterialState *ExecBuildMaterialInc(EState *estate)
+MaterialIncState *ExecBuildMaterialInc(EState *estate)
 {
     MemoryContext old = MemoryContextSwitchTo(estate->es_query_cxt); 
 
-    MaterialState *ms; 
+    MaterialIncState *ms; 
     Material *node = makeNode(Material); 
     node->plan.type = T_Material; 
     node->plan.lefttree = NULL;
@@ -382,7 +384,7 @@ MaterialState *ExecBuildMaterialInc(EState *estate)
 }
 
 void 
-ExecMaterialIncMarkKeep(MaterialState *ms, IncState state)
+ExecMaterialIncMarkKeep(MaterialIncState *ms, IncState state)
 {
     ms->keep = (state != STATE_DROP); 
 }

@@ -131,7 +131,7 @@ extern void ExecResetAggState(AggState * node);
 
 extern void ExecResetSortState(SortState * node); 
 
-extern void ExecResetMaterialIncState(MaterialState * node);
+extern void ExecResetMaterialIncState(MaterialIncState * node);
 
 /*
  * prototypes from functions for ExecInitDelta
@@ -150,7 +150,7 @@ extern void ExecInitAggDelta(AggState * node);
 
 extern void ExecInitSortDelta(SortState * node); 
 
-extern void ExecInitMaterialIncDelta(MaterialState *node); 
+extern void ExecInitMaterialIncDelta(MaterialIncState *node); 
 
 /*
  * prototypes for getting memory cost
@@ -164,11 +164,11 @@ extern int ExecAggMemoryCost(AggState * node, bool estimate);
 
 extern int ExecSortMemoryCost(SortState * node, bool estimate); 
 
-extern int ExecMaterialIncMemoryCost(MaterialState * node, bool estimate); 
+extern int ExecMaterialIncMemoryCost(MaterialIncState * node, bool estimate); 
 
-extern MaterialState *ExecBuildMaterialInc(EState *estate);
+extern MaterialIncState *ExecBuildMaterialInc(EState *estate);
 
-extern void ExecMaterialIncMarkKeep(MaterialState *ms, IncState state); 
+extern void ExecMaterialIncMarkKeep(MaterialIncState *ms, IncState state); 
 
 extern void ExecHashJoinIncMarkKeep(HashJoinState *hjs, IncState state); 
 
@@ -179,6 +179,10 @@ extern int ExecNestLoopMemoryCost(NestLoopState * node, bool estimate);
 extern void ExecNestLoopIncMarkKeep(NestLoopState *nl, IncState state); 
 
 extern void BuildOuterHashNode(HashJoinState *hjstate, EState *estate, int eflags); 
+
+/* other prototypes for MaterialInc */
+extern void ExecReScanMaterialInc(MaterialIncState *node); 
+extern void ExecEndMaterialInc(MaterialIncState *node); 
 
 #endif
 

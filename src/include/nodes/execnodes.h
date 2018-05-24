@@ -38,6 +38,8 @@
 #include "executor/incTQPool.h"
 #include "executor/incTupleQueue.h"
 #include "executor/incDecideState.h"
+#include "utils/dense_tuplestore.h"
+
 struct DPMeta; 
 struct IncTQPool; 
 struct TPCH_Update; 
@@ -1799,10 +1801,28 @@ typedef struct MaterialState
 	ScanState	ss;				/* its first field is NodeTag */
 	int			eflags;			/* capability flags to pass to tuplestore */
 	bool		eof_underlying; /* reached end of underlying plan? */
-    bool        keep;           /* totem: whether keep or not */
-    bool        buffered;       /* totem: did we buffer tuples or not */ 
 	Tuplestorestate *tuplestorestate;
 } MaterialState;
+
+/* ----------------
+ *	 MaterialIncState information
+ *
+ *		materialize nodes are used to materialize the results
+ *		of a subplan into a temporary file.
+ *
+ *		ss.ss_ScanTupleSlot refers to output of underlying plan.
+ * ----------------
+ */
+
+typedef struct MaterialIncState
+{
+	ScanState	ss;				/* its first field is NodeTag */
+	int			eflags;			/* capability flags to pass to tuplestore */
+	bool		eof_underlying; /* reached end of underlying plan? */
+    bool        keep;           /* totem: whether keep or not */
+    bool        buffered;       /* totem: did we buffer tuples or not */ 
+	Densestorestate *tuplestorestate;
+} MaterialIncState;
 
 /* ----------------
  *	 SortState information

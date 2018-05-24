@@ -61,6 +61,8 @@
 #include "utils/rel.h"
 #include "utils/syscache.h"
 
+/* totem */
+#include "executor/incmeta.h"
 
 static bool IndexSupportsBackwardScan(Oid indexid);
 
@@ -247,6 +249,13 @@ ExecReScan(PlanState *node)
 
 		case T_MaterialState:
 			ExecReScanMaterial((MaterialState *) node);
+			break;
+
+        /*
+         * totem
+         */
+		case T_MaterialIncState:
+			ExecReScanMaterialInc((MaterialIncState *) node);
 			break;
 
 		case T_SortState:

@@ -3,13 +3,13 @@
 BENCH_HOME=/home/totemtang/IQP/postgresql/pg_scripts/tpch_test
 DELTA_HOME=/home/totemtang/IQP/postgresql/pg_scripts/tpch_delta
 
-INC=off
+INC=on
 dm=dp
 update=lineitem
 
-for query in q7
+for query in q3
 do
-   for update in orders,lineitem
+   for update in customer
    do 
        for budget in 1500
        do

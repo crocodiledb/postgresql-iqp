@@ -1,10 +1,13 @@
 set max_parallel_workers_per_gather to 0;
 set work_mem to 1000000;
-set memory_budget to 204000;
+set memory_budget to 1500000;
 set decision_method to dp;
 
+set tpch_delta_mode to decay; 
+set bd_prob to 0.8; 
+
 set enable_incremental to on;
-set tpch_updates to 'tpch_default';
+set tpch_updates to 'customer,orders,lineitem';
 set iqp_query to 'q3';
 set gen_mem_info to off; 
 
@@ -26,4 +29,5 @@ group by
 	i3_o_shippriority
 order by
 	revenue desc,
-	i3_o_orderdate; 
+	i3_o_orderdate;
+

@@ -2946,6 +2946,16 @@ static struct config_int ConfigureNamesInt[] =
 
 static struct config_real ConfigureNamesReal[] =
 {
+    /* totem: binomial distribution probability */
+    {
+        {"bd_prob", PGC_USERSET, QUERY_TUNING_COST,
+			gettext_noop("setting the probability for binomial distribution"),
+			NULL
+        },
+        &bd_prob, 
+        0.9, 0, 1.0,
+        NULL, NULL, NULL
+    }, 
 	{
 		{"seq_page_cost", PGC_USERSET, QUERY_TUNING_COST,
 			gettext_noop("Sets the planner's estimate of the cost of a "
@@ -3748,8 +3758,26 @@ static const struct config_enum_entry decision_method_options[] = {
 	{NULL, 0, false}
 };
 
+static const struct config_enum_entry tpch_delta_mode_options[] = {
+	{"default", DEFAULT, false},
+	{"uniform", UNIFORM, false},
+	{"decay", DECAY, false},
+	{"binomial", BINOMIAL, false},
+	{NULL, 0, false}
+};
+
 static struct config_enum ConfigureNamesEnum[] =
 {
+    /* totem: add different ways of generating deltas */
+    {
+        {"tpch_delta_mode", PGC_USERSET, QUERY_TUNING_METHOD, 
+            gettext_noop("Different ways of generating delta "),
+            NULL
+        },
+        &delta_mode,  
+        UNIFORM, tpch_delta_mode_options,
+        NULL, NULL, NULL
+    },
     /* totem: add different ways of deciding which states to be discarded */
     {
         {"decision_method", PGC_USERSET, QUERY_TUNING_METHOD, 

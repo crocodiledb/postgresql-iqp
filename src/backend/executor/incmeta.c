@@ -14,6 +14,7 @@
 #include "executor/execdesc.h"
 #include "nodes/plannodes.h"
 #include "executor/execExpr.h"
+#include "executor/execTPCH.h"
 
 #include "utils/relcache.h"
 #include "utils/rel.h"
@@ -52,7 +53,6 @@
 #define STAT_MEM_SUMMARY_FILE "iqp_stat/mem_summary.out"
 
 #define DELTA_THRESHOLD 1
-#define DELTA_COUNT 3
 
 char *iqp_query;
 
@@ -152,9 +152,6 @@ ExecIncStart(EState *estate, PlanState *ps)
 
     if (estate->es_isSelect && !gen_mem_info)
     {
-        estate->numDelta = DELTA_COUNT; 
-        estate->deltaIndex = 0; 
-
         ExecInitIncInfo(estate, ps);
 
         /* Collect Leaf Nodes (Scan Operators) */
@@ -181,16 +178,12 @@ ExecIncStart(EState *estate, PlanState *ps)
         estate->tq_pool = tq_pool; 
 
         /* Potential Updates of TPC-H */
-        TPCH_Update *update;
-        if (strcmp(tables_with_update, "tpch_default") == 0) 
-        {
-            update = DefaultTPCHUpdate(estate->numDelta);
+        estate->tpch_update = ExecInitTPCHUpdate(); 
+        estate->numDelta = estate->tpch_update->numdelta; 
+        estate->deltaIndex = 0; 
+
+        if (delta_mode == DEFAULT)
             use_default_tpch = true;  
-        }
-        else
-            update = BuildTPCHUpdate(tables_with_update);
-        PopulateUpdate(update, estate->numDelta); 
-        estate->tpch_update = update; 
 
         if (decision_method == DM_DP)
         {

@@ -32,7 +32,6 @@
 #define STAT_MEM_FILE   "dbt_stat/mem.out"
 
 #define DBT_DELTA_THRESHOLD 1
-#define DBT_DELTA_COUNT 5
 
 char *dbt_query;
 bool  enable_dbtoaster; 
@@ -55,7 +54,7 @@ static void ExecDBTPerPSHelper(EState *estate, PlanState *ps, bool reset);
 
 static void ExecEndQD(DBToaster *dbt); 
 static void TakeNewSnapshot(EState *estate);
-static void ExecDBTCollectStat(DBToaster *dbt, PlanState *root); 
+static void ExecDBTCollectStat(DBToaster *dbt, PlanState *root, int numdelta); 
 static void ExecDBTMemCost(DBToaster *dbt, PlanState *root); 
 
 static void ShowMemSize(EState *estate); 
@@ -67,9 +66,6 @@ ExecInitDBToaster(EState *estate, PlanState *root)
     DBToaster   * dbt; 
 
     MemoryContext old = MemoryContextSwitchTo(estate->es_query_cxt); 
-
-    estate->deltaIndex = 0;
-    estate->numDelta = DBT_DELTA_COUNT;
 
     // Build DBTConf and DBToaster
     dbtConf = ExecBuildDBTConf();
@@ -97,19 +93,15 @@ ExecInitDBToaster(EState *estate, PlanState *root)
     estate->tq_pool = tq_pool; 
 
     /* Potential Updates of TPC-H */
-    TPCH_Update *update;
-    if (strcmp(tables_with_update, "tpch_default") == 0) 
-        update = DefaultTPCHUpdate(estate->numDelta);
-    else
-        update = BuildTPCHUpdate(tables_with_update);
-    PopulateUpdate(update, estate->numDelta); 
-    estate->tpch_update = update; 
+    estate->tpch_update = ExecInitTPCHUpdate(); 
+    estate->numDelta = estate->tpch_update->numdelta; 
+    estate->deltaIndex = 0; 
 
     /* Build DBToaster Stats */
     DBTStat *dbtStat = palloc(sizeof(DBTStat)); 
     dbtStat->timeFile = fopen(STAT_TIME_FILE, "a"); 
     dbtStat->memFile = fopen(STAT_MEM_FILE, "a"); 
-    dbtStat->execTime = palloc(sizeof(double) * (DBT_DELTA_COUNT + 1)); 
+    dbtStat->execTime = palloc(sizeof(double) * (estate->numDelta + 1)); 
     dbtStat->memCost = 0; 
     dbt->stat = dbtStat; 
     
@@ -193,7 +185,7 @@ ExecDBToaster(EState *estate, PlanState *root)
 
             if (estate->deltaIndex >= estate->numDelta)
             {
-                ExecDBTCollectStat(dbt, root); 
+                ExecDBTCollectStat(dbt, root, estate->numDelta); 
                 ExecEndQD(dbt);
                 DestroyIncTQPool(estate->tq_pool); 
                 return slot;
@@ -1046,13 +1038,13 @@ static void TakeNewSnapshot(EState *estate)
     estate->es_snapshot =  RegisterSnapshot(GetActiveSnapshot());
 }
 
-static void ExecDBTCollectStat(DBToaster *dbt, PlanState *root)
+static void ExecDBTCollectStat(DBToaster *dbt, PlanState *root, int numdelta)
 {
     ExecDBTMemCost(dbt, root); 
 
     DBTStat *dbtStat = dbt->stat;
 
-    for (int i = 0; i <= DBT_DELTA_COUNT; i++)
+    for (int i = 0; i <= numdelta; i++)
         fprintf(dbtStat->timeFile, "%.2f\t", dbtStat->execTime[i]); 
     fprintf(dbtStat->timeFile, "\n"); 
 

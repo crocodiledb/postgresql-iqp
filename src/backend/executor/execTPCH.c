@@ -15,6 +15,7 @@
 #include <string.h>
 
 char *tables_with_update;
+double bd_prob;  
 
 #define LINEITEM_OID 35147
 #define ORDERS_OID   35139
@@ -34,6 +35,8 @@ char *tables_with_update;
 #define SUPPLIER_MAX_ROW (10000   * SCALE_FACTOR)
 #define PART_MAX_ROW     (200000  * SCALE_FACTOR)
 
+#define MAX_DELTA_NUM 10
+#define MIN_DELTA_PERCENT 0.000999
 #define EXP_DELTA 0.01
 #define WIDTH_DELTA 0.005 
 
@@ -49,23 +52,7 @@ int exist_mask[DEFAULT_MASK_SIZE] = {0x1, 0x2, 0x3};
 #define CHECK_EXIST_MASK(mask, i) \
     ((mask & 1 << i) != 0)
 
-typedef struct TPCH_Delta
-{
-    int max_row; 
-    int *delta_array; 
-} TPCH_Delta; 
-
-struct TPCH_Update 
-{
-    int  numUpdates;
-    int  *table_oid; 
-    char **update_tables;
-    char **update_commands;
-    char **delete_commands;
-    int numdelta;
-    TPCH_Delta *tpch_delta; 
-    int *exist_mask;  
-}; 
+tpch_delta_mode delta_mode = UNIFORM; 
 
 static char *newstr()
 {
@@ -74,21 +61,32 @@ static char *newstr()
     return str;
 }
 
+TPCH_Update *ExecInitTPCHUpdate()
+{
+    TPCH_Update *update;
+    if (delta_mode == DEFAULT) 
+        update = DefaultTPCHUpdate(DELTA_COUNT);
+    else
+        update = BuildTPCHUpdate(tables_with_update);
+
+    (void) PopulateUpdate(update, DELTA_COUNT); 
+
+    return update;
+}
+
+
 TPCH_Update *
 DefaultTPCHUpdate(int numDelta)
 {
     TPCH_Update * update = BuildTPCHUpdate("lineitem,orders");
     update->exist_mask = palloc(sizeof(int) * numDelta);
-
-   // srand(time(0));
-   //
-   // for (int i = 0; i < numDelta; i++)
-   // {
-   //     update->exist_mask[i] = exist_mask[rand() % DEFAULT_MASK_SIZE]; 
-   // }
-    update->exist_mask[0] = exist_mask[0];
-    update->exist_mask[1] = exist_mask[1];
-    update->exist_mask[2] = exist_mask[1];
+    
+    srand(time(0));
+   
+    for (int i = 0; i < numDelta; i++)
+    {
+        update->exist_mask[i] = exist_mask[rand() % DEFAULT_MASK_SIZE]; 
+    }
 
     return update;
 }
@@ -165,7 +163,30 @@ int Uniform(int expected, int width)
     return expected;  
 }
 
-void
+static double *Binomial(int *numdelta)
+{
+    double * delta_percent = palloc(sizeof(double) * MAX_DELTA_NUM);
+
+    double remaining_percent = 1.0 - bd_prob;
+    double cur_percent;  
+    for (int i = 0; i < MAX_DELTA_NUM; i++)
+    {
+        cur_percent = remaining_percent * bd_prob;
+        if (cur_percent < MIN_DELTA_PERCENT)
+        {
+            *numdelta = i; 
+            return delta_percent; 
+        }
+
+        delta_percent[i] = cur_percent; 
+        remaining_percent = remaining_percent - delta_percent[i]; 
+    }
+
+    *numdelta = MAX_DELTA_NUM;
+    return delta_percent; 
+}
+
+int 
 PopulateUpdate(TPCH_Update *update, int numdelta)
 {
     int expected, width; 
@@ -173,7 +194,16 @@ PopulateUpdate(TPCH_Update *update, int numdelta)
     char buffer[STR_BUFSIZE];
     srand(time(0)); 
 
-    update->numdelta = numdelta; 
+    int new_numdelta = numdelta;
+    double *bd_percent;
+
+    if (delta_mode == BINOMIAL)
+        bd_percent = Binomial(&new_numdelta); 
+    else if (delta_mode == DECAY)
+        new_numdelta = update->numUpdates; 
+    
+    update->numdelta =new_numdelta; 
+
     update->tpch_delta = palloc(sizeof(TPCH_Delta) * update->numUpdates);
     update->delete_commands = palloc(sizeof(char *) * update->numUpdates); 
     for (int i = 0; i < update->numUpdates; i++)
@@ -195,14 +225,14 @@ PopulateUpdate(TPCH_Update *update, int numdelta)
         else
             elog(ERROR, "Table %s", update->update_tables[i]);
 
-        update->tpch_delta[i].delta_array[numdelta] = max_row + 1; 
+        update->tpch_delta[i].delta_array[new_numdelta] = max_row + 1; 
         expected = (int)(max_row * EXP_DELTA);
         width = (int) (max_row * WIDTH_DELTA); 
 
-        for (int j = numdelta - 1; j >= 0; j--)
+        for (int j = new_numdelta - 1; j >= 0; j--)
         {
             int delta_size = 0;
-            if (update->exist_mask != NULL)
+            if (delta_mode == DEFAULT) /* default settings */
             {
                 int mask = update->exist_mask[j];
                 if (CHECK_EXIST_MASK(mask, i))
@@ -210,8 +240,26 @@ PopulateUpdate(TPCH_Update *update, int numdelta)
                 else
                     delta_size = 0; 
             }
-            else
+            else if (delta_mode == BINOMIAL)
+            {
+                delta_size = (int)(bd_percent[j] * max_row);
+            }
+            else if (delta_mode == UNIFORM)
+            {
                 delta_size = Uniform(expected, width); 
+            }
+            else if (delta_mode == DECAY)
+            {
+                if (i >= j)
+                    delta_size = Uniform(expected, width);
+                else
+                    delta_size = 0; 
+            }
+            else
+            {
+                elog(ERROR, "mode %d not found", delta_mode); 
+            }
+
             update->tpch_delta[i].delta_array[j] = update->tpch_delta[i].delta_array[j + 1] - delta_size; 
         }
 
@@ -226,6 +274,8 @@ PopulateUpdate(TPCH_Update *update, int numdelta)
         elog(NOTICE, "delete command %s", update->delete_commands[i]); 
         system(update->delete_commands[i]);
     }
+
+    return new_numdelta; 
 }
 
 bool
@@ -284,3 +334,4 @@ char *GetTableName(TPCH_Update *update, int oid)
             return update->update_tables[i];
     }
 }
+

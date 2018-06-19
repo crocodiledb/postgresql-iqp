@@ -12,13 +12,42 @@
 #ifndef EXECTPCH_H
 #define EXECTPCH_H 
 
-extern char *tables_with_update;
+#define DELTA_COUNT 5
 
-typedef struct TPCH_Update TPCH_Update; 
+extern char *tables_with_update;
+extern double bd_prob; 
+extern enum tpch_delta_mode delta_mode; 
+
+typedef enum tpch_delta_mode {
+    DEFAULT,
+    UNIFORM,
+    DECAY, 
+    BINOMIAL 
+} tpch_delta_mode;
+
+typedef struct TPCH_Delta
+{
+    int max_row; 
+    int *delta_array; 
+} TPCH_Delta; 
+
+typedef struct TPCH_Update 
+{
+    int  numUpdates;
+    int  *table_oid; 
+    char **update_tables;
+    char **update_commands;
+    char **delete_commands;
+    int numdelta;
+    TPCH_Delta *tpch_delta; 
+    int *exist_mask;  
+} TPCH_Update; 
+
+extern TPCH_Update *ExecInitTPCHUpdate(); 
 
 extern TPCH_Update *BuildTPCHUpdate(char *tablenames);
 
-extern void PopulateUpdate(TPCH_Update *update, int numdelta); 
+extern int PopulateUpdate(TPCH_Update *update, int numdelta); 
 
 extern bool CheckTPCHUpdate(TPCH_Update *update, int oid, int delta_index);
 

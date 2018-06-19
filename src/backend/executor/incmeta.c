@@ -52,7 +52,7 @@
 #define STAT_MEM_SUMMARY_FILE "iqp_stat/mem_summary.out"
 
 #define DELTA_THRESHOLD 1
-#define DELTA_COUNT 5
+#define DELTA_COUNT 3
 
 char *iqp_query;
 
@@ -696,7 +696,7 @@ static void ExecAssignStateExist(IncInfo **incInfo_array, IncInfo **incInfo_arra
 
         if (incInfo->lefttree != NULL)
         {
-            if (incInfo->incState[LEFT_STATE] == STATE_DROP && (incInfo->leftAction != PULL_BATCH_DELTA || incInfo->leftAction != PULL_BATCH))
+            if (incInfo->incState[LEFT_STATE] == STATE_DROP && (incInfo->leftAction != PULL_BATCH_DELTA && incInfo->leftAction != PULL_BATCH))
                 incInfo_slave->stateExist[LEFT_STATE] = false;
             else
                 incInfo_slave->stateExist[LEFT_STATE] = true;
@@ -704,7 +704,7 @@ static void ExecAssignStateExist(IncInfo **incInfo_array, IncInfo **incInfo_arra
 
         if (incInfo->righttree != NULL)
         {
-            if (incInfo->incState[RIGHT_STATE] == STATE_DROP && (incInfo->rightAction != PULL_BATCH_DELTA || incInfo->rightAction != PULL_BATCH))
+            if (incInfo->incState[RIGHT_STATE] == STATE_DROP && (incInfo->rightAction != PULL_BATCH_DELTA && incInfo->rightAction != PULL_BATCH))
                 incInfo_slave->stateExist[RIGHT_STATE] = false;
             else
                 incInfo_slave->stateExist[RIGHT_STATE] = true;

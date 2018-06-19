@@ -40,6 +40,7 @@ char *tables_with_update;
 #define DELETE_DELTA    "/home/totemtang/IQP/postgresql/pg_scripts/tpch_delta/delete_delta.sh "
 #define GEN_DELTA       "/home/totemtang/IQP/postgresql/pg_scripts/tpch_delta/gen_delta.sh "
 #define CMD_SIZE        200
+#define STR_BUFSIZE     500
 
 /* Exist Mask for default settings */
 #define DEFAULT_MASK_SIZE 3
@@ -66,18 +67,28 @@ struct TPCH_Update
     int *exist_mask;  
 }; 
 
+static char *newstr()
+{
+    char *str = palloc(sizeof(char) * STR_BUFSIZE);
+    memset(str, 0, STR_BUFSIZE); 
+    return str;
+}
+
 TPCH_Update *
 DefaultTPCHUpdate(int numDelta)
 {
     TPCH_Update * update = BuildTPCHUpdate("lineitem,orders");
     update->exist_mask = palloc(sizeof(int) * numDelta);
 
-    srand(time(0));
-
-    for (int i = 0; i < numDelta; i++)
-    {
-        update->exist_mask[i] = exist_mask[rand() % DEFAULT_MASK_SIZE]; 
-    }
+   // srand(time(0));
+   //
+   // for (int i = 0; i < numDelta; i++)
+   // {
+   //     update->exist_mask[i] = exist_mask[rand() % DEFAULT_MASK_SIZE]; 
+   // }
+    update->exist_mask[0] = exist_mask[0];
+    update->exist_mask[1] = exist_mask[1];
+    update->exist_mask[2] = exist_mask[1];
 
     return update;
 }
@@ -86,8 +97,8 @@ TPCH_Update *
 BuildTPCHUpdate(char *tablenames)
 {
     char *dup_tablenames, *name; 
-    dup_tablenames = (char *) malloc(strlen(tablenames) + 1); 
-    dup_tablenames[strlen(tablenames)] = 0; 
+    dup_tablenames = (char *) malloc(sizeof(char) * STR_BUFSIZE); 
+    memset(dup_tablenames, 0, STR_BUFSIZE); 
     strncpy(dup_tablenames, tablenames, strlen(tablenames)); 
     
     TPCH_Update * update = (TPCH_Update *) palloc(sizeof(TPCH_Update));
@@ -107,6 +118,7 @@ BuildTPCHUpdate(char *tablenames)
     update->update_commands = (char **)palloc(sizeof(char *) * update->numUpdates);
     update->table_oid = (int *) palloc(sizeof(int) * update->numUpdates); 
 
+    memset(dup_tablenames, 0, STR_BUFSIZE); 
     strncpy(dup_tablenames, tablenames, strlen(tablenames));
     int i = 0;
     name = strtok(dup_tablenames, ","); 
@@ -127,15 +139,12 @@ BuildTPCHUpdate(char *tablenames)
         else
             elog(ERROR, "Unrecognized table name %s", name); 
 
-        update->update_tables[i] = (char *) palloc(strlen(name) + 1); 
-        update->update_tables[i][strlen(name)] = 0; 
-        strncpy(update->update_tables[i], name, strlen(name));
+        update->update_tables[i] = newstr(); 
+        strcpy(update->update_tables[i], name);
 
-        update->update_commands[i] = (char *) palloc(strlen(GEN_DELTA) + strlen(name) + CMD_SIZE);
-        memset(update->update_commands[i], 0, sizeof(update->update_commands[i])); 
-        strncpy(update->update_commands[i], GEN_DELTA, strlen(GEN_DELTA)); 
-        strncpy(update->update_commands[i] + strlen(GEN_DELTA), name, strlen(name)); 
-
+        update->update_commands[i] = newstr();
+        strcat(update->update_commands[i], GEN_DELTA); 
+        strcat(update->update_commands[i], name); 
 
         i++; 
         name = strtok(NULL, ","); 
@@ -161,7 +170,7 @@ PopulateUpdate(TPCH_Update *update, int numdelta)
 {
     int expected, width; 
     double max_row; 
-    char buffer[50];
+    char buffer[STR_BUFSIZE];
     srand(time(0)); 
 
     update->numdelta = numdelta; 
@@ -206,14 +215,13 @@ PopulateUpdate(TPCH_Update *update, int numdelta)
             update->tpch_delta[i].delta_array[j] = update->tpch_delta[i].delta_array[j + 1] - delta_size; 
         }
 
-        update->delete_commands[i] = (char *) palloc(strlen(DELETE_DELTA) + strlen(update->update_tables[i]) + CMD_SIZE);
-        memset(update->delete_commands[i], 0, sizeof(update->delete_commands[i])); 
-        strncpy(update->delete_commands[i], DELETE_DELTA, strlen(DELETE_DELTA)); 
-        strncpy(update->delete_commands[i] + strlen(DELETE_DELTA), update->update_tables[i], strlen(update->update_tables[i])); 
+        update->delete_commands[i] = newstr();
+        strcat(update->delete_commands[i], DELETE_DELTA); 
+        strcat(update->delete_commands[i], update->update_tables[i]); 
 
-        memset(buffer, 0, sizeof(buffer));
+        memset(buffer, 0, STR_BUFSIZE);
         sprintf(buffer, " %d", update->tpch_delta[i].delta_array[0]); 
-        strncpy(update->delete_commands[i] + strlen(update->delete_commands[i]), buffer, strlen(buffer)); 
+        strcat(update->delete_commands[i], buffer); 
        
         elog(NOTICE, "delete command %s", update->delete_commands[i]); 
         system(update->delete_commands[i]);
@@ -225,7 +233,7 @@ CheckTPCHUpdate(TPCH_Update *update, int oid, int delta_index)
 {
     for(int i = 0; i < update->numUpdates; i++)
     {
-        if (update->table_oid[i] == oid && update->tpch_delta[i].delta_array[delta_index] != 0)
+        if (update->table_oid[i] == oid && update->tpch_delta[i].delta_array[delta_index] != update->tpch_delta[i].delta_array[delta_index + 1])
             return true;
     }
     return false; 
@@ -243,7 +251,8 @@ CheckTPCHDefaultUpdate(int oid)
 void
 GenTPCHUpdate(TPCH_Update *update, int delta_index)
 {
-    char buffer[100]; 
+    char buffer[STR_BUFSIZE]; 
+    char *cur_update_command = malloc(sizeof(char) * STR_BUFSIZE);
     int *delta_array;
 
     for(int i = 0; i < update->numUpdates; i++) 
@@ -252,17 +261,19 @@ GenTPCHUpdate(TPCH_Update *update, int delta_index)
         if (delta_array[delta_index] == delta_array[delta_index + 1])
             continue; 
 
-        int original_len = strlen(update->update_commands[i]); 
+        memset(buffer, 0, STR_BUFSIZE); 
+        memset(cur_update_command, 0, STR_BUFSIZE); 
 
-        memset(buffer, 0, sizeof(buffer)); 
         sprintf(buffer, " %d %d", update->tpch_delta[i].delta_array[delta_index], update->tpch_delta[i].delta_array[delta_index + 1]);
-        strncpy(update->update_commands[i] + strlen(update->update_commands[i]), buffer, strlen(buffer)); 
 
-        elog(NOTICE, "update command %s", update->update_commands[i]); 
-        system(update->update_commands[i]);
+        strcat(cur_update_command, update->update_commands[i]); 
+        strcat(cur_update_command, buffer); 
 
-        memset(update->update_commands[i] + original_len, 0, strlen(buffer)); 
+        elog(NOTICE, "update command %s", cur_update_command); 
+        system(cur_update_command);
     }
+
+    free(cur_update_command); 
 }
 
 char *GetTableName(TPCH_Update *update, int oid)

@@ -1,11 +1,12 @@
-set enable_incremental to on;
 set max_parallel_workers_per_gather to 0;
 set work_mem to 1000000;
-set memory_budget to 1500000;
+set memory_budget to 204000;
 set decision_method to dp;
-set tpch_updates to 'lineitem';
+
+set enable_incremental to on;
+set tpch_updates to 'tpch_default';
 set iqp_query to 'q3';
-set gen_mem_info to on; 
+set gen_mem_info to off; 
 
 select
 	i3_l_orderkey,

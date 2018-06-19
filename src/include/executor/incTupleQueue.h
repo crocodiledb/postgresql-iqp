@@ -16,7 +16,7 @@
 #include "executor/tuptable.h"
 #include "utils/relcache.h"
 
-#define SHM_SIZE 10*1024*1024
+#define SHM_SIZE 100*1024*1024
 
 #define GEN_TQ_KEY(r) \
     ((key_t)(r->rd_id))

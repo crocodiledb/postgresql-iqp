@@ -900,7 +900,10 @@ ExecHashTableInsert(HashJoinTable hashtable,
 		if (hashtable->spaceUsed +
 			hashtable->nbuckets_optimal * sizeof(HashJoinTuple)
 			> hashtable->spaceAllowed)
+        {
+            elog(NOTICE, "Memory not enough to hold the hash table"); 
 			ExecHashIncreaseNumBatches(hashtable);
+        }
 	}
 	else
 	{

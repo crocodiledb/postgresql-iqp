@@ -96,6 +96,7 @@
  */
 #include "executor/incmeta.h"
 #include "executor/execTPCH.h"
+#include "executor/dbt.h"
 
 #ifndef PG_KRB_SRVTAB
 #define PG_KRB_SRVTAB ""
@@ -809,6 +810,28 @@ static const unit_conversion time_unit_conversion_table[] =
 
 static struct config_bool ConfigureNamesBool[] =
 {
+    /* totem: db toaster option */
+    {
+        {"enable_dbtoaster", PGC_USERSET, QUERY_TUNING_METHOD,
+            gettext_noop("Enable dbtoaster"),
+            NULL
+        },
+        &enable_dbtoaster, 
+        false, 
+        NULL, NULL, NULL
+    },
+
+    /* totem: add gen_mem_info option */
+    {
+        {"gen_mem_info", PGC_USERSET, QUERY_TUNING_METHOD,
+            gettext_noop("Generate memory information"),
+            NULL
+        },
+        &gen_mem_info,
+        false,
+        NULL, NULL, NULL
+    },
+
     /* totem: add enable_incremental option */
     {
         {"enable_incremental", PGC_USERSET, QUERY_TUNING_METHOD,
@@ -3084,6 +3107,26 @@ static struct config_real ConfigureNamesReal[] =
 
 static struct config_string ConfigureNamesString[] =
 {
+    /* totem: dbt_query */
+    {
+        {"dbt_query", PGC_USERSET, UNGROUPED,
+            gettext_noop("Set Query for DBToaster Info"),
+            NULL
+        },
+        &dbt_query,
+        "",
+        NULL, NULL, NULL       
+    }, 
+    /* totem: iqp_query */
+    {
+        {"iqp_query", PGC_USERSET, UNGROUPED,
+            gettext_noop("Set Query for IQP"),
+            NULL
+        },
+        &iqp_query,
+        "",
+        NULL, NULL, NULL
+    },   
     /* totem: TPCH update string*/
     {
         {"tpch_updates", PGC_USERSET, UNGROUPED,

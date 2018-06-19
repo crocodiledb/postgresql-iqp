@@ -15,6 +15,8 @@
 #include "nodes/execnodes.h"
 #include "executor/executor.h"
 
+extern char *iqp_query;
+extern bool gen_mem_info;
 extern bool enable_incremental;
 extern int  memory_budget;
 extern bool use_sym_hashjoin; 
@@ -36,7 +38,6 @@ extern bool use_sym_hashjoin;
 
 #define TupIsDelta(slot) \
     (((slot)->tts_inc_state & TTS_DELTA) != 0)
-
 
 /*
  * prototypes from functions in executor/execScan.c
@@ -155,16 +156,16 @@ extern void ExecInitMaterialIncDelta(MaterialIncState *node);
 /*
  * prototypes for getting memory cost
  */
-extern int ExecHashJoinMemoryCost(HashJoinState * node, bool estimate, bool right); 
+extern int ExecHashJoinMemoryCost(HashJoinState * node, bool * estimate, bool right); 
 extern int ExecEstimateHashTableSize(double ntuples, int tupwidth); 
 
 //extern void ExecInitMergeJoinDelta(MergeJoinState * node); 
 
-extern int ExecAggMemoryCost(AggState * node, bool estimate); 
+extern int ExecAggMemoryCost(AggState * node, bool * estimate); 
 
-extern int ExecSortMemoryCost(SortState * node, bool estimate); 
+extern int ExecSortMemoryCost(SortState * node, bool * estimate); 
 
-extern int ExecMaterialIncMemoryCost(MaterialIncState * node, bool estimate); 
+extern int ExecMaterialIncMemoryCost(MaterialIncState * node); 
 
 extern MaterialIncState *ExecBuildMaterialInc(EState *estate);
 
@@ -174,7 +175,7 @@ extern void ExecHashJoinIncMarkKeep(HashJoinState *hjs, IncState state);
 
 extern void ExecHashIncreaseNumBuckets(HashJoinTable hashtable);
 
-extern int ExecNestLoopMemoryCost(NestLoopState * node, bool estimate); 
+extern int ExecNestLoopMemoryCost(NestLoopState * node, bool * estimate); 
 
 extern void ExecNestLoopIncMarkKeep(NestLoopState *nl, IncState state); 
 

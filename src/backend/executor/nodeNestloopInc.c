@@ -652,13 +652,15 @@ ExtractNonHashClauses(List *joinclauses)
 }
 
 int 
-ExecNestLoopMemoryCost(NestLoopState * node, bool estimate)
+ExecNestLoopMemoryCost(NestLoopState * node, bool * estimate)
 {
+    *estimate = false; 
     if (!use_sym_hashjoin)
         return 0; 
 
-    if (estimate || node->nl_hj->hj_OuterHashTable == NULL )
+    if (node->nl_hj->hj_OuterHashTable == NULL )
     {
+        *estimate = true;
         Plan *plan = outerPlan(node->js.ps.plan);
         return ((ExecEstimateHashTableSize(plan->plan_rows, plan->plan_width) + 1023) / 1024); 
     }

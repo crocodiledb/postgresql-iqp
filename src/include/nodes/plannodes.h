@@ -124,6 +124,7 @@ typedef struct Plan
 	 */
 	Cost		startup_cost;	/* cost expended before fetching any tuples */
 	Cost		total_cost;		/* total cost (assuming all tuples fetched) */
+    Cost        delta_cost;     /* totem: delta cost for changing plan */ 
 
 	/*
 	 * planner's estimate of result size of this plan step

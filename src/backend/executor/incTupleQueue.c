@@ -96,6 +96,8 @@ GetIncTupQueueSnapShot(IncTupQueueReader *tq_reader, IncTupQueueReader *ss_reade
     ss_reader->ss_cur_num = tq_reader->tq->tuple_num; 
     ss_reader->ss_total_num = tq_reader->tq->tuple_num; 
     ss_reader->ss_head = tq_reader->tq->head; 
+
+    return ss_reader; 
 }
 
 /*

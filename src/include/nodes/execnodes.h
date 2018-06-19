@@ -39,7 +39,11 @@
 #include "executor/incTupleQueue.h"
 #include "executor/incDecideState.h"
 #include "utils/dense_tuplestore.h"
+#include "executor/execdesc.h"
 
+#include "executor/iqpquery.h"
+
+struct DBToaster;  
 struct DPMeta; 
 struct IncTQPool; 
 struct TPCH_Update; 
@@ -528,19 +532,21 @@ typedef struct EState
 	bool		es_use_parallel_mode; /* can we use parallel workers? */
 
     bool        es_incremental; /* totem: execute this query incrementally? */
+    bool        es_dbt; 
     struct IncInfo   **es_incInfo;     /* totem: array of IncInfo for drop/keep state */
     struct IncInfo   **es_incInfo_slave; /* totem: array of IncInfo for plan modification */
     int         es_numIncInfo;
     int         es_numLeaf; 
 
-    FILE      *es_statFile;
+    FILE      *es_timeFile; 
+    FILE      *es_memFile;
+    FILE      *es_stateFile; 
+    FILE      *es_memStatFile; 
     double    decisionTime; 
-    double    repairTime;
-    double    batchTime;
+    double    *execTime;
     enum IncState  **es_incState;
     int        es_incMemory; 
     int        es_totalMemCost; 
-    int        es_usedMemory;  
 
     /* Used to accept delta on the fly */
     bool             es_isSelect;
@@ -550,12 +556,18 @@ typedef struct EState
 
     struct DPMeta      *dpmeta; 
     struct TPCH_Update *tpch_update; 
-    int          numDelta;           /* totem: number of delta we may have 
-                                      *  (TODO: this is a temporary solution) */ 
-    bool       leftChildExist; 
-    bool       rightChildExist;
-    struct PlanState *tempLeftPS; 
-    struct PlanState *tempRightPS; 
+    int                 numDelta;           /* totem: number of delta we may have */ 
+    int                 deltaIndex;         /* totem: the current delta */
+    bool                leftChildExist; 
+    bool                rightChildExist;
+    struct PlanState    *tempLeftPS; 
+    struct PlanState    *tempRightPS;
+    struct QueryDesc    *es_qd;
+    Oid                 rd_id;             /* totem for dbtoaster */ 
+    bool                isBuild;            /* totem for dbtoaster: do we build hash table for rd_oid or not */
+
+    struct DBToaster    *dbt;
+    struct iqp_base     *base; 
 } EState;
 
 
@@ -930,8 +942,9 @@ typedef struct PlanState
 
     struct IncInfo *ps_IncInfo;            /* totem: info struct for incremental processing */
     struct IncInfo *ps_IncInfo_slave;      /* totem: info struct for changing plan */
-    PullAction chgAction;           /* totem: used by Rescan */
-    bool    isDelta;                /* totem: is in delta processing */
+    TupleTableSlot *ps_WorkingTupleSlot;   /* totem for dbt */
+    PullAction chgAction;                  /* totem: used by Rescan */
+    bool    isDelta;                       /* totem: is in delta processing */
 } PlanState;
 
 /* ----------------
@@ -1778,7 +1791,14 @@ typedef struct HashJoinState
 	bool		hj_OuterNotEmpty;
     bool        hj_isDelta;         /* totem: whether we are in delta processing */
     bool        hj_isComplete;      /* totem: whether we complete the join */
-    bool        hj_keep;            /* totem: wehther we keep the input of the outer subtree */
+    bool        hj_keep;
+    bool        hj_KeepInner;       /* totem: wehther we keep the input of the inner subtree */
+    bool        hj_KeepOuter;       /* totem: wehther we keep the input of the outer subtree */
+    bool        hj_ProbeInner;
+    bool        hj_ProbeOuter;
+    bool        hj_PullInner;
+    bool        hj_PullOuter; 
+    bool        hj_hasInnerHash;    /* totem for dbt: is hash table null */
 } HashJoinState;
 
 

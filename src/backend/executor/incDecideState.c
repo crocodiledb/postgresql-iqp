@@ -164,10 +164,10 @@ ExecDPSolution(DPMeta *dpmeta, IncInfo **incInfoArray, int numIncInfo, int incMe
                     break; 
 
                 case INC_MATERIAL:
-                    if (isSlave || incInfo->ps)
-                        incInfo->execDPNode = MaterialDP;
-                    else
-                        incInfo->execDPNode = SimpleDropDP; 
+                    //if (isSlave || incInfo->ps)
+                    incInfo->execDPNode = MaterialDP;
+                    //else
+                    //    incInfo->execDPNode = SimpleDropDP; 
                     break;  
 
                 case INC_HASHJOIN:
@@ -333,7 +333,7 @@ MaterialDP(DPMeta *dpmeta, int i, int j, IncInfo *incInfo)
     cand_cost[BD_DROP]    = bdCost[left][j];
     cand_memleft[BD_DROP] = j; 
 
-    if (j >= state_mcost)
+    if (j >= state_mcost && incInfo->stateExist[LEFT_STATE])
     {
         cand_cost[BD_KEEP] = deltaCost[left][j - state_mcost] + state_kcost;
         cand_memleft[BD_KEEP] = j - state_mcost; 
@@ -435,7 +435,7 @@ SortDPHasUpdate (DPMeta *dpmeta, int i, int j, IncInfo *incInfo)
     cand_cost[BD_DROP]    = bdCost[left][j] + incInfo->prepare_cost[LEFT_STATE] + incInfo->compute_cost + DELTA_COST;
     cand_memleft[BD_DROP] = j; 
 
-    if (j >= state_mcost)
+    if (j >= state_mcost && incInfo->stateExist[LEFT_STATE])
     {
         cand_cost[BD_KEEP] = deltaCost[left][j - state_mcost] + DELTA_COST;
         cand_memleft[BD_KEEP] = j - state_mcost; 
@@ -481,7 +481,7 @@ SortDPNoUpdate (DPMeta *dpmeta, int i, int j, IncInfo *incInfo)
     cand_cost[BD_DROP]    = bdCost[left][j] + incInfo->prepare_cost[LEFT_STATE] + incInfo->compute_cost; 
     cand_memleft[BD_DROP] = j; 
 
-    if (j >= state_mcost)
+    if (j >= state_mcost && incInfo->stateExist[LEFT_STATE])
     {
         cand_cost[BD_KEEP] = 0; 
         cand_memleft[BD_KEEP] = j - state_mcost; 
@@ -528,7 +528,7 @@ AggDPHasUpdate (DPMeta *dpmeta, int i, int j, IncInfo *incInfo)
     cand_cost[BD_DROP]    = cand_cost[DELTA_DROP] + incInfo->compute_cost; 
     cand_memleft[BD_DROP] = j; 
 
-    if (j >= state_mcost)
+    if (j >= state_mcost && incInfo->stateExist[LEFT_STATE])
     {
         cand_cost[DELTA_KEEP] = deltaCost[left][j - state_mcost] + DELTA_COST; 
         cand_cost[BD_KEEP] = cand_cost[DELTA_KEEP] + incInfo->compute_cost; 
@@ -577,7 +577,7 @@ AggDPNoUpdate (DPMeta *dpmeta, int i, int j, IncInfo *incInfo)
     cand_cost[BD_DROP]    = bdCost[left][j] + state_pcost + incInfo->compute_cost; 
     cand_memleft[BD_DROP] = j; 
 
-    if (j >= state_mcost)
+    if (j >= state_mcost && incInfo->stateExist[LEFT_STATE])
     {
         cand_cost[BD_KEEP]    = incInfo->compute_cost; 
         cand_memleft[BD_KEEP] = j - state_mcost; 
@@ -612,8 +612,6 @@ NestLoopDP (DPMeta *dpmeta, int i, int j, IncInfo *incInfo)
 
     int left_mcost = incInfo->memory_cost[LEFT_STATE]; 
 
-    bool keep = ((NestLoopState *)incInfo->ps)->nl_keep;  
-
     /* deltaDropBothCost, deltaKeepLeftCost, deltaKeepRightCost, deltaKeepBothCost, bdDropBothCost, bdKeepRightCost */
     /* We only need to consider
      *  deltaDropBothCost, 
@@ -638,7 +636,7 @@ NestLoopDP (DPMeta *dpmeta, int i, int j, IncInfo *incInfo)
         leftMem = k;
         rightMem = j - k;
 
-        if (use_sym_hashjoin && keep && incInfo->leftUpdate && incInfo->rightUpdate)
+        if (use_sym_hashjoin && incInfo->leftUpdate && incInfo->rightUpdate && incInfo->stateExist[LEFT_STATE])
         {
             if (j >= left_mcost && k <= j - left_mcost)
             {
@@ -677,7 +675,7 @@ NestLoopDP (DPMeta *dpmeta, int i, int j, IncInfo *incInfo)
             SetCostInfo(cand_cost, cand_memleft, cand_memright, tempCost, leftMem, rightMem, BD_DROPBOTH); 
     }
 
-    if (use_sym_hashjoin && keep && !incInfo->leftUpdate && incInfo->rightUpdate && j >= left_mcost)
+    if (use_sym_hashjoin && incInfo->stateExist[LEFT_STATE] && !incInfo->leftUpdate && incInfo->rightUpdate && j >= left_mcost)
     {
         cand_cost[DELTA_KEEPLEFT] = incInfo->keep_cost[LEFT_STATE] + deltaCost[right][j - left_mcost] + incInfo->delta_cost[LEFT_STATE]; 
         cand_memright[DELTA_KEEPLEFT] = j - left_mcost; 
@@ -751,7 +749,7 @@ HashJoinDPLeftUpdate (DPMeta *dpmeta, int i, int j, IncInfo *incInfo)
             SetCostInfo(cand_cost, cand_memleft, cand_memright, tempCost, leftMem, rightMem, BD_DROPBOTH); 
     }
    
-    if (j >= state_mcost)
+    if (j >= state_mcost && incInfo->stateExist[RIGHT_STATE] )
     {
         cand_cost[DELTA_KEEPRIGHT] = deltaCost[left][j - state_mcost] + incInfo->delta_cost[RIGHT_STATE];
         cand_memleft[DELTA_KEEPRIGHT] = j - state_mcost; 
@@ -787,8 +785,6 @@ HashJoinDPRightUpdate (DPMeta *dpmeta, int i, int j, IncInfo *incInfo)
 
     int left_mcost = incInfo->memory_cost[LEFT_STATE]; 
     int right_mcost = incInfo->memory_cost[RIGHT_STATE];
-
-    bool keep = ((HashJoinState *)incInfo->ps)->hj_keep; 
 
     /* deltaDropBothCost, deltaKeepLeftCost, deltaKeepRightCost, deltaKeepBothCost, bdDropBothCost, bdKeepRightCost */
     /* We only need to consider 
@@ -826,7 +822,7 @@ HashJoinDPRightUpdate (DPMeta *dpmeta, int i, int j, IncInfo *incInfo)
             SetCostInfo(cand_cost, cand_memleft, cand_memright, tempCost, leftMem, rightMem, BD_DROPBOTH); 
 
         /* bdKeepRightCost */
-        if (j >= right_mcost && k <= j - right_mcost)
+        if (j >= right_mcost && k <= j - right_mcost && incInfo->stateExist[RIGHT_STATE])
         {
             rightMem = j - right_mcost - k; 
             tempCost = bdCost[left][leftMem] + deltaCost[right][rightMem] + incInfo->compute_cost + incInfo->delta_cost[RIGHT_STATE]; 
@@ -837,7 +833,7 @@ HashJoinDPRightUpdate (DPMeta *dpmeta, int i, int j, IncInfo *incInfo)
     }
 
     /* deltaKeepLeftCost */
-    if (keep && use_sym_hashjoin && j >= left_mcost)
+    if (use_sym_hashjoin && j >= left_mcost && incInfo->stateExist[LEFT_STATE])
     {
         cand_cost[DELTA_KEEPLEFT] = incInfo->keep_cost[LEFT_STATE] + deltaCost[right][j - left_mcost] + incInfo->delta_cost[LEFT_STATE]; 
         cand_memleft[DELTA_KEEPLEFT] = 0; 
@@ -901,7 +897,7 @@ HashJoinDPNoUpdate (DPMeta *dpmeta, int i, int j, IncInfo *incInfo)
     }
 
     /* bdKeepRightCost */
-    if (j >= right_mcost)
+    if (j >= right_mcost && incInfo->stateExist[RIGHT_STATE])
     {
         cand_cost[BD_KEEPRIGHT] = bdCost[left][j - right_mcost] + incInfo->compute_cost; 
         cand_memleft[BD_KEEPRIGHT] = j - right_mcost;
@@ -937,8 +933,6 @@ HashJoinDPBothUpdate (DPMeta *dpmeta, int i, int j, IncInfo *incInfo)
     int left_mcost = incInfo->memory_cost[LEFT_STATE]; 
     int right_mcost = incInfo->memory_cost[RIGHT_STATE]; 
     
-    bool keep = ((HashJoinState *)incInfo->ps)->hj_keep; 
-
     /* deltaDropBothCost, deltaKeepLeftCost, deltaKeepRightCost, deltaKeepBothCost, bdDropBothCost, bdKeepRightCost */
     int cand_cost[JOIN_OPTIONS] = {INT_MAX, INT_MAX, INT_MAX, INT_MAX, INT_MAX, INT_MAX};
     int cand_memleft[JOIN_OPTIONS] = {0, 0, 0, 0, 0, 0}; 
@@ -971,7 +965,7 @@ HashJoinDPBothUpdate (DPMeta *dpmeta, int i, int j, IncInfo *incInfo)
             SetCostInfo(cand_cost, cand_memleft, cand_memright, tempCost, leftMem, rightMem, BD_DROPBOTH); 
 
         /* deltaKeepLeftCost */
-        if (keep && use_sym_hashjoin && j >= left_mcost && k <= j - left_mcost)
+        if (use_sym_hashjoin && j >= left_mcost && k <= j - left_mcost && incInfo->stateExist[LEFT_STATE])
         {
             rightMem = j - left_mcost - k; 
             tempCost = deltaCost[left][leftMem] + incInfo->keep_cost[LEFT_STATE] + bdCost[right][rightMem] + \ 
@@ -980,7 +974,7 @@ HashJoinDPBothUpdate (DPMeta *dpmeta, int i, int j, IncInfo *incInfo)
                 SetCostInfo(cand_cost, cand_memleft, cand_memright, tempCost, leftMem, rightMem, DELTA_KEEPLEFT); 
         }
 
-        if (j >= right_mcost && k <= j - right_mcost)
+        if (j >= right_mcost && k <= j - right_mcost && incInfo->stateExist[RIGHT_STATE])
         {
             /* deltaKeepRightCost */
             rightMem = j - right_mcost - k; 
@@ -995,7 +989,8 @@ HashJoinDPBothUpdate (DPMeta *dpmeta, int i, int j, IncInfo *incInfo)
         }
 
         /* deltaKeepBothCost */
-        if (keep && use_sym_hashjoin && j >= (left_mcost + right_mcost) && k <= j - (left_mcost + right_mcost))
+        if (incInfo->stateExist[LEFT_STATE] && incInfo->stateExist[RIGHT_STATE] && use_sym_hashjoin \
+                && j >= (left_mcost + right_mcost) && k <= j - (left_mcost + right_mcost))
         {
             rightMem = j - left_mcost - right_mcost; 
             tempCost = deltaCost[left][leftMem] + deltaCost[right][rightMem] + incInfo->delta_cost[LEFT_STATE];

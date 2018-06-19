@@ -9,18 +9,18 @@ update=lineitem
 
 for query in q3
 do
-   for update in customer
+   for update in tpch_default
    do 
-       for budget in 1500
+       for budget in 150
        do
-           if [ "$INC" == "on" ]
-           then
-               IFS=',' read -r -a update_array <<< "${update}"
-               for oneupdate in "${update_array[@]}"
-               do
-                   $DELTA_HOME/delete_delta.sh $oneupdate
-               done
-           fi
+           #if [ "$INC" == "on" ]
+           #then
+           #    IFS=',' read -r -a update_array <<< "${update}"
+           #    for oneupdate in "${update_array[@]}"
+           #    do
+           #        $DELTA_HOME/delete_delta.sh $oneupdate
+           #    done
+           #fi
 
            let budget=budget*1024
            psql \
@@ -31,7 +31,8 @@ do
              -v v_budget=${budget} \
              -v v_dm=${dm} \
              -v v_update="'${update}'" \
-             -f $BENCH_HOME/$query.sql
+             -f $BENCH_HOME/$query.sql \
+             > /dev/null
        done
    done
 done

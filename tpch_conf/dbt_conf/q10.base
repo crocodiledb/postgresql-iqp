@@ -1,0 +1,13 @@
+3
+n_c
+1	o:custkey	
+6   custname:varchar(25)	acctbal:decimal	nationname:char(25)	address:varchar(40)	phone:char(15)	comment:varchar(117)    
+
+o
+2	n_c:custkey	l:orderkey	
+0	
+
+l
+1	o:orderkey	
+2	extendedprice:decimal	discount:decimal	
+

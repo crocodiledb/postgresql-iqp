@@ -108,7 +108,8 @@ typedef struct IncInfo
     int memory_cost[MAX_STATE]; 
     int prepare_cost[MAX_STATE];
     int delta_cost[MAX_STATE];
-    int keep_cost[MAX_STATE];  
+    int keep_cost[MAX_STATE]; 
+    bool mem_computed[MAX_STATE];  
 
     /* Does left or right substrees have deltas; will only be used in the compile time */
     bool    leftUpdate; 
@@ -119,7 +120,8 @@ typedef struct IncInfo
     PullAction rightAction; 
 
     /* IncState: will be used in the delta execution */
-    IncState incState[MAX_STATE]; 
+    IncState incState[MAX_STATE];
+    bool     stateExist[MAX_STATE]; 
 
 } IncInfo; 
  

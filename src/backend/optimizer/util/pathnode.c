@@ -2079,6 +2079,7 @@ create_nestloop_path(PlannerInfo *root,
 	 * because the restrict_clauses list can affect the size and cost
 	 * estimates for this path.
 	 */
+    /* totem */
 //	if (bms_overlap(inner_req_outer, outer_path->parent->relids))
 //	{
 //		Relids		inner_and_outer = bms_union(inner_path->parent->relids,

@@ -67,7 +67,7 @@
 
 /* totem: include executor/incmeta.h*/
 #include "executor/incmeta.h"
-
+#include "executor/dbt.h"
 
 /* Hooks for plugins to get control in ExecutorStart/Run/Finish/End */
 ExecutorStart_hook_type ExecutorStart_hook = NULL;
@@ -165,6 +165,9 @@ standard_ExecutorStart(QueryDesc *queryDesc, int eflags)
 	Assert(queryDesc != NULL);
 	Assert(queryDesc->estate == NULL);
 
+    if (enable_incremental && enable_dbtoaster)
+        elog(ERROR, "IQP and DBToaster cannot be both enabled"); 
+
 	/*
 	 * If the transaction is read-only, we need to check if any writes are
 	 * planned to non-temporary tables.  EXPLAIN is considered read-only.
@@ -195,7 +198,9 @@ standard_ExecutorStart(QueryDesc *queryDesc, int eflags)
      * totem: Set incremental 
      */
     estate->es_incremental = enable_incremental;
-    estate->es_isSelect = (queryDesc->operation == CMD_SELECT); 
+    estate->es_isSelect = (queryDesc->operation == CMD_SELECT);
+    estate->es_dbt = enable_dbtoaster; 
+
 
 	oldcontext = MemoryContextSwitchTo(estate->es_query_cxt);
 
@@ -276,9 +281,22 @@ standard_ExecutorStart(QueryDesc *queryDesc, int eflags)
     /*
      * totem: initialize IncInfo 
      */
+    estate->deltaIndex = 0; 
     estate->numDelta = 0; 
-    if (estate->es_incremental) 
+    if (estate->es_incremental && queryDesc->isFirst) 
+    {
+        estate->es_qd = queryDesc; 
         ExecIncStart(estate, queryDesc->planstate); 
+    }
+    else if (estate->es_dbt && queryDesc->isFirst)
+    {
+        estate->es_qd = queryDesc; 
+        ExecInitDBToaster(estate, queryDesc->planstate); 
+    }
+    else if (!estate->es_dbt)
+    {
+        estate->execTime = palloc(sizeof(double)); 
+    }
 
 	MemoryContextSwitchTo(oldcontext);
 }
@@ -457,15 +475,16 @@ standard_ExecutorFinish(QueryDesc *queryDesc)
 	if (queryDesc->totaltime)
 		InstrStopNode(queryDesc->totaltime, 0);
 
-    if (estate->es_incremental)
+    if (estate->es_incremental && queryDesc->isFirst)
         ExecIncFinish(estate, queryDesc->planstate);
-    else
+    else if (estate->es_dbt && queryDesc->isFirst)
+        ExecEndDBToaster(estate); 
+    else if (!estate->es_dbt)
     {
-        estate->es_statFile = fopen("statbatch.txt", "a"); 
-        FILE *statFile = estate->es_statFile;
-        fprintf(statFile, "%.2f\n", \
-                estate->repairTime); 
-        fclose(estate->es_statFile); 
+        estate->es_timeFile = fopen("timeFile_batch.txt", "a"); 
+        FILE *timeFile = estate->es_timeFile;
+        fprintf(timeFile, "%.2f\n", estate->execTime[0]); 
+        fclose(timeFile); 
 
     } 
 
@@ -1751,8 +1770,11 @@ ExecutePlan(EState *estate,
 
 		/*
 		 * Execute the plan and obtain a tuple
-		 */     
-		slot = ExecProcNode(planstate);
+		 */
+        if (estate->es_dbt)
+            slot = ExecDBToaster(estate, planstate);
+        else 
+            slot = ExecProcNode(planstate);
 
 		/*
 		 * if the tuple is null, then we assume there is nothing more to
@@ -1764,17 +1786,17 @@ ExecutePlan(EState *estate,
          */
 		if (TupIsNull(slot)) 
         {
-            if (estate->numDelta == 0) 
+            if (estate->deltaIndex >= estate->numDelta) 
             {
                 if (estate->es_incremental && estate->es_isSelect)
                 {
                     gettimeofday(&end , NULL);
-                    estate->repairTime = GetTimeDiff(start, end);  
+                    estate->execTime[estate->deltaIndex] = GetTimeDiff(start, end);  
                 }
-                else if (!estate->es_incremental)
+                else if (!estate->es_incremental && !estate->es_dbt)
                 {
                     gettimeofday(&end , NULL);
-                    estate->repairTime = GetTimeDiff(start, end);  
+                    estate->execTime[estate->numDelta] = GetTimeDiff(start, end);  
                 }
                 /* Allow nodes to release or shut down resources. */
 			    (void) ExecShutdownNode(planstate);
@@ -1783,10 +1805,10 @@ ExecutePlan(EState *estate,
             else 
             {
                 /* es_incremental and es_isSelect must be true */
-                estate->numDelta--; 
+                estate->deltaIndex++; 
 
                 gettimeofday(&end , NULL);
-                estate->batchTime = GetTimeDiff(start, end); 
+                estate->execTime[estate->deltaIndex - 1] = GetTimeDiff(start, end); 
 
                 ExecIncRun(estate, planstate);      
                 gettimeofday(&start , NULL);

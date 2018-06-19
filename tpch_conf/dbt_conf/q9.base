@@ -1,0 +1,21 @@
+5
+n_s
+1	l:suppkey	
+1	name:char(25)	
+
+p
+1   l:partkey
+0
+
+ps
+2	l:partkey   l:suppkey   
+1	supplycost:decimal	
+
+o
+1	l:orderkey	
+1	year:double	
+
+l
+5	n_s:suppkey	p:partkey	ps:suppkey	ps:partkey	o:orderkey  
+3	quantity:decimal	extendedprice:decimal	discount:decimal	
+

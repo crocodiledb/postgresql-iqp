@@ -659,3 +659,4 @@
 #
 #enable_incremental = off
 #memory_budget = 100 
+#gen_mem_info = off

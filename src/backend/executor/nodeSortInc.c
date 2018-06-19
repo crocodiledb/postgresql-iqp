@@ -295,18 +295,20 @@ ExecInitSortDelta(SortState * node)
 }
 
 int
-ExecSortMemoryCost(SortState * node, bool estimate)
+ExecSortMemoryCost(SortState * node, bool * estimate)
 {
     Plan *plan = node->ss.ps.plan; 
 
     int memory_cost = 0; 
-    if (estimate) 
+    if (node->tuplesortstate == NULL) 
     {
+        *estimate = true;
         double input_bytes = plan->plan_rows * (MAXALIGN(plan->plan_width) + MAXALIGN(SizeofHeapTupleHeader)); 
         memory_cost = (int) ((input_bytes +1023)/1024); 
     }
     else
     {
+        *estimate = false; 
         Tuplesortstate * temp = (Tuplesortstate *) (node->tuplesortstate); 
         if (temp != NULL)
             memory_cost += tuplesort_getusedmem(temp);

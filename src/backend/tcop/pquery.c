@@ -59,6 +59,15 @@ static uint64 DoPortalRunFetch(Portal portal,
 				 DestReceiver *dest);
 static void DoPortalRewind(Portal portal);
 
+void HackSnapshot(QueryDesc *qd)
+{
+    UnregisterSnapshot(qd->snapshot);
+	PopActiveSnapshot();
+    
+    PushActiveSnapshot(GetTransactionSnapshot());
+    qd->snapshot = RegisterSnapshot(GetActiveSnapshot()); 
+}
+
 
 /*
  * CreateQueryDesc
@@ -94,6 +103,8 @@ CreateQueryDesc(PlannedStmt *plannedstmt,
 
 	/* not yet executed */
 	qd->already_executed = false;
+
+    qd->isFirst = true; 
 
 	return qd;
 }

@@ -39,6 +39,8 @@
 #include "executor/incinfo.h"
 #include "executor/incExecDS.h"
 
+#include "executor/dbt.h"
+
 static void InitScanRelation(SeqScanState *node, EState *estate, int eflags);
 static TupleTableSlot *SeqNext(SeqScanState *node);
 
@@ -152,6 +154,16 @@ ExecSeqScanInc(PlanState *pstate)
 	SeqScanState *node = castNode(SeqScanState, pstate);
 
 	return ExecScanInc(&node->ss,
+					(ExecScanAccessMtd) SeqNext,
+					(ExecScanRecheckMtd) SeqRecheck);
+}
+
+static TupleTableSlot *
+ExecSeqScanDBT(PlanState *pstate)
+{
+	SeqScanState *node = castNode(SeqScanState, pstate);
+
+	return ExecScanDBT(&node->ss,
 					(ExecScanAccessMtd) SeqNext,
 					(ExecScanRecheckMtd) SeqRecheck);
 }
@@ -430,3 +442,12 @@ ExecInitSeqScanDelta(SeqScanState * node)
         ExecReScanSeqScan(node);
 
 }
+
+void 
+ExecInitSeqScanDBT(SeqScanState *node)
+{
+    ExecInitScanDBT(node); 
+    node->ss.ps.ExecProcNode = ExecSeqScanDBT;  
+}
+
+

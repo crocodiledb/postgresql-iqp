@@ -346,17 +346,9 @@ ExecInitMaterialIncDelta(MaterialIncState * node)
  */
 
 int 
-ExecMaterialIncMemoryCost(MaterialIncState * node, bool estimate)
+ExecMaterialIncMemoryCost(MaterialIncState * node)
 {
-    Plan *plan = node->ss.ps.plan; 
-    int memory_cost = 0; 
-    if (estimate)
-    {
-        double input_bytes = plan->plan_rows * (MAXALIGN(plan->plan_width) + MAXALIGN(SizeofHeapTupleHeader)); 
-        return (int) ((input_bytes +1023)/1024); 
-    }
-    else
-        return (densestore_getusedmem(node->tuplestorestate) + 1023)/1024;
+    return (densestore_getusedmem(node->tuplestorestate) + 1023)/1024;
 }
 
 /*

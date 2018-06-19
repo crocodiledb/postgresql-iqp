@@ -32,6 +32,7 @@ OBJS = execAmi.o execCurrent.o execExpr.o execExprInterp.o \
        nodeTableFuncscan.o \
 	   incmeta.o nodeHashjoinInc.o nodeSortInc.o nodeMergejoinInc.o nodeAggInc.o \
 	   incTupleQueue.o incTQPool.o nodeNestloopInc.o execTPCH.o incDecideState.o \
-	   nodeMaterialInc.o incmodifyplan.o
+	   nodeMaterialInc.o incmodifyplan.o iqpquery.o \
+	   nodeAggDBT.o nodeSortDBT.o nodeHashjoinDBT.o HashBundle.o dbtquery.o dbt.o 
 
 include $(top_srcdir)/src/backend/common.mk

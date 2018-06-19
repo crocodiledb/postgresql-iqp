@@ -1,0 +1,21 @@
+5
+r_n_c
+1   o:custkey   
+0   
+
+n2_s
+1   l:suppkey   
+1   name:char(25)   
+
+p
+1   l:partkey   
+0   
+
+o
+2   r_n_c:custkey   l:orderkey  
+1   year:double 
+
+l
+3   n2_s:suppkey   p:partkey   o:orderkey  
+2   extendedprice:decimal   discount:decimal    
+

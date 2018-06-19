@@ -2598,7 +2598,7 @@ ExecInitAggDelta(AggState * node)
 }
 
 int 
-ExecAggMemoryCost(AggState * node, bool estimate)
+ExecAggMemoryCost(AggState * node, bool * estimate)
 {
     if (node->aggstrategy == AGG_HASHED) 
     {
@@ -2615,13 +2615,15 @@ ExecAggMemoryCost(AggState * node, bool estimate)
     	/* plus the per-hash-entry overhead */
     	hashentrysize += hash_agg_entry_size(node->numaggs); 
 
-        if (estimate)
+        *estimate = (node->distGroups == 0); 
+        if (node->distGroups == 0)
             return (int)((hashentrysize*plan->plan_rows + 1023) / 1024);
         else
             return (int)((hashentrysize*node->distGroups + 1023) / 1024);  
     }
     else
     {
+        *estimate = false;
         return 0; 
     }
 }

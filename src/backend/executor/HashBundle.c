@@ -22,16 +22,29 @@ HashBundle *BuildHashBundle(int table_num)
     hb->hashkeys_array = palloc(sizeof(List *) * table_num); 
     hb->outer_tuple_array = palloc(sizeof(bool) * table_num);
     hb->econtext_array = palloc(sizeof(ExprContext) * table_num); 
+    hb->joinkey = palloc(sizeof(char **) * table_num);
+    hb->joinkey_num = palloc(sizeof(int) * table_num); 
 }
 
 void HashBundleAddTable(HashBundle *hb, HashJoinTable table, ExprContext *econtext, List *hashkeys, bool outer_tuple)
 {
+   // for (int i = 0; i < hb->table_index; i++)
+   // {
+   //     if (hb->joinkey_num[i] == joinkey_num)
+   //     {
+   //         for (int j = 0; j < joinekey_num; j++)
+   //         {
+   //         }
+   //     }
+   // }
+
     hb->table_array[hb->table_index] = table;
     hb->econtext_array[hb->table_index] = econtext; 
     hb->hashkeys_array[hb->table_index] = hashkeys; 
     hb->outer_tuple_array[hb->table_index] = outer_tuple; 
 
     hb->table_index++; 
+
 }
 
 void HashBundleInsert(HashBundle *hb, TupleTableSlot *slot)
@@ -61,7 +74,6 @@ void HashBundleInsert(HashBundle *hb, TupleTableSlot *slot)
         
         ExecHashTableInsert(hashtable, slot, hashvalue);
         hashtable->totalTuples += 1;
-
     }
 }
 

@@ -67,6 +67,11 @@ ExecInitDBToaster(EState *estate, PlanState *root)
 
     MemoryContext old = MemoryContextSwitchTo(estate->es_query_cxt); 
 
+    /* Potential Updates of TPC-H */
+    estate->tpch_update = ExecInitTPCHUpdate(); 
+    estate->numDelta = estate->tpch_update->numdelta; 
+    estate->deltaIndex = 0; 
+
     // Build DBTConf and DBToaster
     dbtConf = ExecBuildDBTConf();
     TakeNewSnapshot(estate); 
@@ -91,11 +96,6 @@ ExecInitDBToaster(EState *estate, PlanState *root)
     }
 
     estate->tq_pool = tq_pool; 
-
-    /* Potential Updates of TPC-H */
-    estate->tpch_update = ExecInitTPCHUpdate(); 
-    estate->numDelta = estate->tpch_update->numdelta; 
-    estate->deltaIndex = 0; 
 
     /* Build DBToaster Stats */
     DBTStat *dbtStat = palloc(sizeof(DBTStat)); 
@@ -140,26 +140,24 @@ ExecDBToaster(EState *estate, PlanState *root)
                 if (!dbt->base_array[i]->hasUpdate)
                     continue; 
     
-                //int count = 0; 
+                int count = 0; 
                 DBTMaterial * mat = dbt->base_array[i];
                 for (;;)
                 {
                     slot = ExecProcNode(mat->local_ps[i]); 
                     if (TupIsNull(slot))
                         break;
+
+                    count++; 
     
                     for (int j = 0; j < mat->parent_num[i]; j++)
                         ExecDBTProcNode(mat->parents[i][j], slot, i); 
     
                     if (mat->hb != NULL)
                         HashBundleInsert(mat->hb, slot);
-
-                    //count++; 
-                    //if (count % 100000 == 0)
-                    //{
-                    //   elog(NOTICE, "%d, %d", i, count); 
-                    //}
                 }
+                    
+                elog(NOTICE, "%d, %d", i, count); 
 
                 if (estate->deltaIndex == 0)
                     ExecDBTResizeHashTable(dbt);    
@@ -923,6 +921,8 @@ ExecBuildDBToaster(DBTConf * dbtConf, PlanState *root)
         dbtMat->isBuild     =   palloc(sizeof(bool) * base_num); 
         dbtMat->parent_num  =   palloc(sizeof(int) * base_num); 
         dbtMat->parents     =   palloc(sizeof(DBTMaterial **) * base_num);
+        dbtMat->joinkey     =   matConf->joinkey;
+        dbtMat->joinkey_num =   matConf->joinkey_num; 
         
         int numHash = 0; 
         for (int j = 0; j < base_num; j++)
@@ -1072,12 +1072,12 @@ static void ExecDBTMemCost(DBToaster *dbt, PlanState *root)
     PlanState *cur = root; 
     for (;;)
     {
-        if (cur->type == T_AggState)
-            memCost += ExecAggMemoryCost(cur, &estimate); 
-        else if (cur->type == T_SortState)
-            memCost += ExecSortMemoryCost(cur, &estimate); 
-        else
-            elog(ERROR, "%d Not supported ", cur->type); 
+        //if (cur->type == T_AggState)
+        //    memCost += ExecAggMemoryCost(cur, &estimate); 
+        //else if (cur->type == T_SortState)
+        //    memCost += ExecSortMemoryCost(cur, &estimate); 
+        //else
+        //    elog(ERROR, "%d Not supported ", cur->type); 
 
         if (cur->lefttree->lefttree == NULL)
             break;  
@@ -1085,7 +1085,7 @@ static void ExecDBTMemCost(DBToaster *dbt, PlanState *root)
         cur = cur->lefttree;
     }
 
-    dbt->stat->memCost += (memCost + 1023)/1024; 
+    dbt->stat->memCost = (memCost + 1023)/1024; 
 }
 
 

@@ -52,7 +52,8 @@ int exist_mask[DEFAULT_MASK_SIZE] = {0x1, 0x2, 0x3};
 #define CHECK_EXIST_MASK(mask, i) \
     ((mask & 1 << i) != 0)
 
-tpch_delta_mode delta_mode = UNIFORM; 
+int delta_count = 1;
+tpch_delta_mode delta_mode = TPCH_UNIFORM; 
 
 static char *newstr()
 {
@@ -64,12 +65,12 @@ static char *newstr()
 TPCH_Update *ExecInitTPCHUpdate()
 {
     TPCH_Update *update;
-    if (delta_mode == DEFAULT) 
-        update = DefaultTPCHUpdate(DELTA_COUNT);
+    if (delta_mode == TPCH_DEFAULT) 
+        update = DefaultTPCHUpdate(delta_count);
     else
         update = BuildTPCHUpdate(tables_with_update);
 
-    (void) PopulateUpdate(update, DELTA_COUNT); 
+    (void) PopulateUpdate(update, delta_count); 
 
     return update;
 }
@@ -197,9 +198,9 @@ PopulateUpdate(TPCH_Update *update, int numdelta)
     int new_numdelta = numdelta;
     double *bd_percent;
 
-    if (delta_mode == BINOMIAL)
+    if (delta_mode == TPCH_BINOMIAL)
         bd_percent = Binomial(&new_numdelta); 
-    else if (delta_mode == DECAY)
+    else if (delta_mode == TPCH_DECAY)
         new_numdelta = update->numUpdates; 
     
     update->numdelta =new_numdelta; 
@@ -208,7 +209,7 @@ PopulateUpdate(TPCH_Update *update, int numdelta)
     update->delete_commands = palloc(sizeof(char *) * update->numUpdates); 
     for (int i = 0; i < update->numUpdates; i++)
     {
-        update->tpch_delta[i].delta_array = palloc(sizeof(int) * (numdelta + 1)); 
+        update->tpch_delta[i].delta_array = palloc(sizeof(int) * (new_numdelta + 1)); 
 
         if (strcmp(update->update_tables[i], "lineitem") == 0)
             max_row = LINEITEM_MAX_ROW;
@@ -232,7 +233,7 @@ PopulateUpdate(TPCH_Update *update, int numdelta)
         for (int j = new_numdelta - 1; j >= 0; j--)
         {
             int delta_size = 0;
-            if (delta_mode == DEFAULT) /* default settings */
+            if (delta_mode == TPCH_DEFAULT) /* default settings */
             {
                 int mask = update->exist_mask[j];
                 if (CHECK_EXIST_MASK(mask, i))
@@ -240,15 +241,15 @@ PopulateUpdate(TPCH_Update *update, int numdelta)
                 else
                     delta_size = 0; 
             }
-            else if (delta_mode == BINOMIAL)
+            else if (delta_mode == TPCH_BINOMIAL)
             {
                 delta_size = (int)(bd_percent[j] * max_row);
             }
-            else if (delta_mode == UNIFORM)
+            else if (delta_mode == TPCH_UNIFORM)
             {
                 delta_size = Uniform(expected, width); 
             }
-            else if (delta_mode == DECAY)
+            else if (delta_mode == TPCH_DECAY)
             {
                 if (i >= j)
                     delta_size = Uniform(expected, width);

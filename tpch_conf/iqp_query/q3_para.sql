@@ -1,15 +1,15 @@
 set max_parallel_workers_per_gather to 0;
 set work_mem to 1000000;
-set memory_budget to 1500000;
 set decision_method to dp;
 
-set tpch_delta_mode to uniform; 
-set bd_prob to 0.5; 
+set memory_budget to :v_budget;
+set tpch_delta_mode to :v_mode; 
+set bd_prob to :v_prob; 
 
 set enable_incremental to on;
-set tpch_updates to 'lineitem';
+set tpch_updates to 'customer,orders,lineitem';
 set iqp_query to 'q3';
-set gen_mem_info to on; 
+set gen_mem_info to off; 
 
 select
 	i3_l_orderkey,

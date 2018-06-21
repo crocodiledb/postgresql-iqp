@@ -12,7 +12,9 @@ typedef struct HashBundle
     HashJoinTable *table_array;
     List          **hashkeys_array; 
     bool          *outer_tuple_array; 
-    ExprContext    **econtext_array; 
+    ExprContext    **econtext_array;
+    char          ***joinkey; 
+    int           *joinkey_num; 
 } HashBundle; 
 
 

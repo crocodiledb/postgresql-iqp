@@ -182,7 +182,7 @@ ExecIncStart(EState *estate, PlanState *ps)
         estate->numDelta = estate->tpch_update->numdelta; 
         estate->deltaIndex = 0; 
 
-        if (delta_mode == DEFAULT)
+        if (delta_mode == TPCH_DEFAULT)
             use_default_tpch = true;  
 
         if (decision_method == DM_DP)
@@ -248,6 +248,7 @@ ExecIncStart(EState *estate, PlanState *ps)
         gettimeofday(&end , NULL);
         estate->decisionTime += GetTimeDiff(start, end);  
 
+        TakeNewSnapshot(estate);
     }
     else if (estate->es_isSelect && gen_mem_info)
     {

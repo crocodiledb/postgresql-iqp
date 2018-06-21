@@ -12,17 +12,15 @@
 #ifndef EXECTPCH_H
 #define EXECTPCH_H 
 
-#define DELTA_COUNT 5
-
 extern char *tables_with_update;
 extern double bd_prob; 
 extern enum tpch_delta_mode delta_mode; 
 
 typedef enum tpch_delta_mode {
-    DEFAULT,
-    UNIFORM,
-    DECAY, 
-    BINOMIAL 
+    TPCH_DEFAULT,
+    TPCH_UNIFORM,
+    TPCH_DECAY, 
+    TPCH_BINOMIAL 
 } tpch_delta_mode;
 
 typedef struct TPCH_Delta

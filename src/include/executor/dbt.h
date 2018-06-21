@@ -54,6 +54,8 @@ typedef struct DBTMaterial
     PlanState           **proj_ps;
     struct DBTMaterial  **left; 
     struct DBTMaterial  **right; 
+    char                ***joinkey;
+    int*                joinkey_num; 
     Oid                 *base_oid;      /* For each join operator, what is oid of the joined based table */
     bool                *isBuild;       /* Do we build the hash table for the base table or not */
     PlanState           *additional_ps; 

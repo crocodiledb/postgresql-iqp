@@ -3759,10 +3759,10 @@ static const struct config_enum_entry decision_method_options[] = {
 };
 
 static const struct config_enum_entry tpch_delta_mode_options[] = {
-	{"default", DEFAULT, false},
-	{"uniform", UNIFORM, false},
-	{"decay", DECAY, false},
-	{"binomial", BINOMIAL, false},
+	{"default", TPCH_DEFAULT, false},
+	{"uniform", TPCH_UNIFORM, false},
+	{"decay", TPCH_DECAY, false},
+	{"binomial", TPCH_BINOMIAL, false},
 	{NULL, 0, false}
 };
 
@@ -3775,7 +3775,7 @@ static struct config_enum ConfigureNamesEnum[] =
             NULL
         },
         &delta_mode,  
-        UNIFORM, tpch_delta_mode_options,
+        TPCH_UNIFORM, tpch_delta_mode_options,
         NULL, NULL, NULL
     },
     /* totem: add different ways of deciding which states to be discarded */

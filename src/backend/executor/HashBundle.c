@@ -23,7 +23,9 @@ HashBundle *BuildHashBundle(int table_num)
     hb->outer_tuple_array = palloc(sizeof(bool) * table_num);
     hb->econtext_array = palloc(sizeof(ExprContext) * table_num); 
     hb->joinkey = palloc(sizeof(char **) * table_num);
-    hb->joinkey_num = palloc(sizeof(int) * table_num); 
+    hb->joinkey_num = palloc(sizeof(int) * table_num);
+
+    return hb;  
 }
 
 void HashBundleAddTable(HashBundle *hb, HashJoinTable table, ExprContext *econtext, List *hashkeys, bool outer_tuple)

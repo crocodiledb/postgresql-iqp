@@ -28,25 +28,38 @@ HashBundle *BuildHashBundle(int table_num)
     return hb;  
 }
 
-void HashBundleAddTable(HashBundle *hb, HashJoinTable table, ExprContext *econtext, List *hashkeys, bool outer_tuple)
+HashJoinTable HashBundleAddTable(HashBundle *hb, HashJoinTable table, ExprContext *econtext, List *hashkeys, \ 
+                                 bool outer_tuple, char **joinkey, int joinkey_num )
 {
-   // for (int i = 0; i < hb->table_index; i++)
-   // {
-   //     if (hb->joinkey_num[i] == joinkey_num)
-   //     {
-   //         for (int j = 0; j < joinekey_num; j++)
-   //         {
-   //         }
-   //     }
-   // }
+    int i, j; 
+    for (i = 0; i < hb->table_index; i++)
+    {
+        if (hb->joinkey_num[i] == joinkey_num)
+        {
+            for (j = 0; j < joinkey_num; j++)
+            {
+                if (strcmp(hb->joinkey[i][j], joinkey[j]) != 0)
+                    break; 
+            }
 
+            /* Found */
+            if (j == joinkey_num)
+                return hb->table_array[i]; 
+        }
+    }
+
+    /* Not found: insert it */
     hb->table_array[hb->table_index] = table;
     hb->econtext_array[hb->table_index] = econtext; 
     hb->hashkeys_array[hb->table_index] = hashkeys; 
     hb->outer_tuple_array[hb->table_index] = outer_tuple; 
 
-    hb->table_index++; 
+    hb->joinkey[hb->table_index] = joinkey; 
+    hb->joinkey_num[hb->table_index] = joinkey_num; 
 
+    hb->table_index++;
+
+    return NULL; 
 }
 
 void HashBundleInsert(HashBundle *hb, TupleTableSlot *slot)
@@ -58,7 +71,7 @@ void HashBundleInsert(HashBundle *hb, TupleTableSlot *slot)
 
     uint32 hashvalue; 
 
-    for (int i = 0; i < hb->table_num; i++)
+    for (int i = 0; i < hb->table_index; i++)
     {
         hashtable = hb->table_array[i]; 
         econtext = hb->econtext_array[i]; 

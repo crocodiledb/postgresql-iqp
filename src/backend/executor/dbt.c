@@ -55,7 +55,7 @@ static void ExecDBTPerPSHelper(EState *estate, PlanState *ps, bool reset);
 static void ExecEndQD(DBToaster *dbt); 
 static void TakeNewSnapshot(EState *estate);
 static void ExecDBTCollectStat(DBToaster *dbt, PlanState *root, int numdelta); 
-static void ExecDBTMemCost(DBToaster *dbt, PlanState *root); 
+static int ExecDBTMemCost(DBToaster *dbt, PlanState *root); 
 
 static void ShowMemSize(EState *estate); 
 
@@ -102,7 +102,7 @@ ExecInitDBToaster(EState *estate, PlanState *root)
     dbtStat->timeFile = fopen(STAT_TIME_FILE, "a"); 
     dbtStat->memFile = fopen(STAT_MEM_FILE, "a"); 
     dbtStat->execTime = palloc(sizeof(double) * (estate->numDelta + 1)); 
-    dbtStat->memCost = 0; 
+    dbtStat->memCost =  palloc(sizeof(int) * (estate->numDelta + 1)); 
     dbt->stat = dbtStat; 
     
     MemoryContextSwitchTo(old);
@@ -163,8 +163,10 @@ ExecDBToaster(EState *estate, PlanState *root)
                     ExecDBTResizeHashTable(dbt);    
             }
 
+            /* 
             if (estate->deltaIndex == 0)
                 ExecDBTAccountBucketSize(dbt);
+            */
     
             /*Finallize it */
             AggState *aggstate = dbt->mat_array[0]->additional_ps; 
@@ -180,6 +182,7 @@ ExecDBToaster(EState *estate, PlanState *root)
             gettimeofday(&(dbt->stat->end) , NULL); 
 
             dbt->stat->execTime[estate->deltaIndex] = GetTimeDiff(dbt->stat->start, dbt->stat->end); 
+            dbt->stat->memCost[estate->deltaIndex] = ExecDBTMemCost(dbt, root); 
 
             if (estate->deltaIndex >= estate->numDelta)
             {
@@ -326,7 +329,8 @@ ExecDBTCollectHashTable(EState *estate, DBTMaterial *mat, DBTMaterial *child, in
         outer_tuple = true; 
     }
 
-    HashBundleAddTable(child->hb, hashtable, hjState->js.ps.ps_ExprContext, hash_keys, outer_tuple);
+    hjState->hj_RealHashTable = HashBundleAddTable(child->hb, hashtable, hjState->js.ps.ps_ExprContext, \ 
+                                                    hash_keys, outer_tuple, mat->joinkey[base_index], mat->joinkey_num[base_index]);
 }
 
 
@@ -380,7 +384,7 @@ ExecDBTResizeHashTable(DBToaster *dbt)
         DBTMaterial *mat = dbt->mat_array[i];
         if (mat->hb != NULL)
         {
-            for (int j = 0; j < mat->hb->table_num; j++)
+            for (int j = 0; j < mat->hb->table_index; j++)
             {
                 HashJoinTable hjTable = mat->hb->table_array[j]; 
                 if (hjTable->nbuckets != hjTable->nbuckets_optimal)
@@ -398,7 +402,7 @@ static void ExecDBTAccountBucketSize(DBToaster *dbt)
         DBTMaterial *mat = dbt->mat_array[i];
         if (mat->hb != NULL)
         {
-            for (int j = 0; j < mat->hb->table_num; j++)
+            for (int j = 0; j < mat->hb->table_index; j++)
             {
                 HashJoinTable hashtable = mat->hb->table_array[j];
             	hashtable->spaceUsed += hashtable->nbuckets * sizeof(HashJoinTuple);
@@ -1040,21 +1044,21 @@ static void TakeNewSnapshot(EState *estate)
 
 static void ExecDBTCollectStat(DBToaster *dbt, PlanState *root, int numdelta)
 {
-    ExecDBTMemCost(dbt, root); 
-
     DBTStat *dbtStat = dbt->stat;
 
     for (int i = 0; i <= numdelta; i++)
         fprintf(dbtStat->timeFile, "%.2f\t", dbtStat->execTime[i]); 
     fprintf(dbtStat->timeFile, "\n"); 
 
-    fprintf(dbtStat->memFile, "%d\n", dbtStat->memCost); 
+    for (int i = 0; i <= numdelta; i++)
+        fprintf(dbtStat->memFile, "%d\t", dbtStat->memCost[i]); 
+    fprintf(dbtStat->memFile, "\n"); 
 
     fclose(dbtStat->memFile); 
     fclose(dbtStat->timeFile); 
 }
 
-static void ExecDBTMemCost(DBToaster *dbt, PlanState *root)
+static int ExecDBTMemCost(DBToaster *dbt, PlanState *root)
 {
     int memCost = 0; 
 
@@ -1063,8 +1067,15 @@ static void ExecDBTMemCost(DBToaster *dbt, PlanState *root)
         HashBundle *hb = dbt->mat_array[i]->hb; 
         if (hb != NULL)
         {
-            for (int j = 0; j < hb->table_num; j++)
-                memCost += (hb->table_array[j]->spaceUsed + 1023)/1024 ;
+            for (int j = 0; j < hb->table_index; j++)
+            {
+                HashJoinTable hashtable = hb->table_array[j]; 
+                int bucketSpace = hashtable->nbuckets * sizeof(HashJoinTuple);
+                memCost += (hashtable->spaceUsed + bucketSpace + 1023)/1024 ;
+
+	            if (hashtable->spaceUsed + bucketSpace > hashtable->spacePeak)
+		            hashtable->spacePeak = hashtable->spaceUsed;
+            }
         }
     }
 
@@ -1072,20 +1083,20 @@ static void ExecDBTMemCost(DBToaster *dbt, PlanState *root)
     PlanState *cur = root; 
     for (;;)
     {
-        //if (cur->type == T_AggState)
-        //    memCost += ExecAggMemoryCost(cur, &estimate); 
-        //else if (cur->type == T_SortState)
-        //    memCost += ExecSortMemoryCost(cur, &estimate); 
-        //else
-        //    elog(ERROR, "%d Not supported ", cur->type); 
+        if (cur->type == T_AggState)
+            memCost += ExecAggMemoryCost(cur, &estimate); 
+        else if (cur->type == T_SortState)
+            memCost += ExecSortMemoryCost(cur, &estimate); 
+        else
+            elog(ERROR, "%d Not supported ", cur->type); 
 
         if (cur->lefttree->lefttree == NULL)
             break;  
         
         cur = cur->lefttree;
     }
-
-    dbt->stat->memCost = (memCost + 1023)/1024; 
+   
+    return (memCost + 1023)/1024; 
 }
 
 
@@ -1099,7 +1110,7 @@ static void ShowMemSize(EState *estate)
 
         if (mat->hb != NULL)
         {
-            for (int j = 0; j < mat->hb->table_num; j++)
+            for (int j = 0; j < mat->hb->table_index; j++)
             {
                 HashJoinTable hj = mat->hb->table_array[j]; 
                 int spaceUsed = hj->spaceUsed; 

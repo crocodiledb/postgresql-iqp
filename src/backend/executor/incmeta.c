@@ -1358,7 +1358,8 @@ ExecCollectPerDeltaInfo(EState *estate)
         {
             case INC_HASHJOIN:
                 tmpMem = ExecHashJoinMemoryCost((HashJoinState *) ps, &estimate, true);
-                tmpMem = incInfo->memory_cost[RIGHT_STATE];
+                tmpMem = (tmpMem + 1023) / 1024;
+                //tmpMem = incInfo->memory_cost[RIGHT_STATE];
                 if (!estimate)
                 {
                     activeMem += tmpMem; 
@@ -1367,7 +1368,8 @@ ExecCollectPerDeltaInfo(EState *estate)
                 }
     
                 tmpMem = ExecHashJoinMemoryCost((HashJoinState *) ps, &estimate, false);
-                tmpMem = incInfo->memory_cost[LEFT_STATE];
+                tmpMem = (tmpMem + 1023) / 1024;
+                //tmpMem = incInfo->memory_cost[LEFT_STATE];
                 if (!estimate)
                 {
                     activeMem += tmpMem; 
@@ -1384,7 +1386,8 @@ ExecCollectPerDeltaInfo(EState *estate)
     
             case INC_NESTLOOP:
                 tmpMem = ExecNestLoopMemoryCost((NestLoopState *) ps, &estimate);
-                tmpMem = incInfo->memory_cost[LEFT_STATE];
+                tmpMem = (tmpMem + 1023) / 1024;
+                //tmpMem = incInfo->memory_cost[LEFT_STATE];
                 if (!estimate)
                 {
                     activeMem += tmpMem; 
@@ -1406,7 +1409,8 @@ ExecCollectPerDeltaInfo(EState *estate)
     
             case INC_AGGHASH:
                 tmpMem = ExecAggMemoryCost((AggState *) ps, &estimate);
-                tmpMem = incInfo->memory_cost[LEFT_STATE];
+                tmpMem = (tmpMem + 1023) / 1024;
+                //tmpMem = incInfo->memory_cost[LEFT_STATE];
                 if (!estimate)
                 {
                     activeMem += tmpMem; 
@@ -1420,7 +1424,8 @@ ExecCollectPerDeltaInfo(EState *estate)
                 if (ps != NULL)
                 {
                     tmpMem = ExecMaterialIncMemoryCost((MaterialIncState *) ps); 
-                    tmpMem = incInfo->memory_cost[LEFT_STATE];
+                    tmpMem = (tmpMem + 1023) / 1024;
+                    //tmpMem = incInfo->memory_cost[LEFT_STATE];
                     activeMem += tmpMem; 
                     if (incInfo->incState[LEFT_STATE] == STATE_KEEPMEM)
                         idleMem += tmpMem; 
@@ -1431,9 +1436,10 @@ ExecCollectPerDeltaInfo(EState *estate)
 
             case INC_SORT: 
                 tmpMem = ExecSortMemoryCost((SortState *) ps, &estimate);  
+                tmpMem = (tmpMem + 1023) / 1024; 
                 if (!estimate)
                 {
-                    tmpMem = incInfo->memory_cost[LEFT_STATE];
+                    //tmpMem = incInfo->memory_cost[LEFT_STATE];
                     activeMem += tmpMem; 
                     if (incInfo->incState[LEFT_STATE] == STATE_KEEPMEM)
                         idleMem += tmpMem; 
@@ -1464,7 +1470,6 @@ ExecCollectPerDeltaInfo(EState *estate)
         }
         fprintf(stateFile, "\n"); 
     }
-
 }
 
 /*

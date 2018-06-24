@@ -37,7 +37,7 @@
 
 static bool ExecScanHashBucketDBT(HashJoinState *hjstate,
                                   ExprContext *econtext, 
-                                  bool outer);
+                                  bool outer, HashJoinTable realHashTable);
 static TupleTableSlot * ExecHashJoin_NewInner(PlanState *pstate);
 static TupleTableSlot * ExecHashJoin_NewOuter(PlanState *pstate);
 
@@ -51,10 +51,11 @@ ExecHashJoin_NewInner(PlanState *pstate)
 	ExprState  *otherqual;
 	ExprContext *econtext;
 	uint32		hashvalue;
-	int			batchno; 
+	int			batchno;
+    HashJoinTable realHashTable = node->hj_RealHashTable;  
 
-    if (node->hj_OuterHashTable->totalTuples == 0)
-        return NULL; 
+    //if (node->hj_OuterHashTable->totalTuples == 0)
+    //    return NULL; 
 
 	/*
 	 * get information from HashJoin node
@@ -100,10 +101,20 @@ ExecHashJoin_NewInner(PlanState *pstate)
 		 * hash table or skew hash table.
 		 */
 		node->hj_CurHashValue = hashvalue;
-		ExecHashGetBucketAndBatch(outerHashTable, hashvalue,
-								  &node->hj_CurBucketNo, &batchno);
-		node->hj_CurSkewBucketNo = ExecHashGetSkewBucket(outerHashTable,
-														 hashvalue);
+        if (realHashTable != NULL)
+        {
+            ExecHashGetBucketAndBatch(realHashTable, hashvalue,
+				    				  &node->hj_CurBucketNo, &batchno);
+            node->hj_CurSkewBucketNo = ExecHashGetSkewBucket(realHashTable,
+					    									 hashvalue);
+        }
+        else
+        {
+    		ExecHashGetBucketAndBatch(outerHashTable, hashvalue,
+		    						  &node->hj_CurBucketNo, &batchno);
+	    	node->hj_CurSkewBucketNo = ExecHashGetSkewBucket(outerHashTable,
+			    											 hashvalue);
+        }
 		node->hj_CurTuple = NULL; 
         
         /* We assume only one batch, which means inner/outer hash table is stored in memory */
@@ -115,7 +126,7 @@ ExecHashJoin_NewInner(PlanState *pstate)
 
     for (;;) 
     {
-        if (!ExecScanHashBucketDBT(node, econtext, true))
+        if (!ExecScanHashBucketDBT(node, econtext, true, realHashTable))
     	{
     		node->hj_JoinState = HJ_NEED_NEW_INNER;
             return NULL; 
@@ -162,9 +173,10 @@ ExecHashJoin_NewOuter(PlanState *pstate)
 	HashJoinTable hashtable;
 	uint32		hashvalue;
 	int			batchno;
+    HashJoinTable realHashTable = node->hj_RealHashTable;
 
-    if (node->hj_HashTable->totalTuples == 0)
-        return NULL; 
+    //if (node->hj_HashTable->totalTuples == 0)
+    //    return NULL; 
 
 	/*
 	 * get information from HashJoin node
@@ -199,10 +211,20 @@ ExecHashJoin_NewOuter(PlanState *pstate)
 		 * hash table or skew hash table.
 		 */
 		node->hj_CurHashValue = hashvalue;
-		ExecHashGetBucketAndBatch(hashtable, hashvalue,
-								  &node->hj_CurBucketNo, &batchno);
-		node->hj_CurSkewBucketNo = ExecHashGetSkewBucket(hashtable,
+        if (realHashTable != NULL)
+        {
+    		ExecHashGetBucketAndBatch(realHashTable, hashvalue,
+                                        &node->hj_CurBucketNo, &batchno);
+    		node->hj_CurSkewBucketNo = ExecHashGetSkewBucket(realHashTable,
 														 hashvalue);
+        }
+        else
+        {
+            ExecHashGetBucketAndBatch(hashtable, hashvalue,
+                                        &node->hj_CurBucketNo, &batchno);
+    		node->hj_CurSkewBucketNo = ExecHashGetSkewBucket(hashtable,
+														 hashvalue);
+        }
 		node->hj_CurTuple = NULL; 
         
         /* We assume only one batch, which means inner hash table is stored in memory */
@@ -218,7 +240,7 @@ ExecHashJoin_NewOuter(PlanState *pstate)
         /*
     	 * Scan the selected hash bucket for matches to current outer
     	 */
-    	if (!ExecScanHashBucketDBT(node, econtext, false))
+    	if (!ExecScanHashBucketDBT(node, econtext, false, realHashTable))
         {
             node->hj_JoinState = HJ_NEED_NEW_OUTER;
             return NULL; 
@@ -325,14 +347,16 @@ ExecResetHashJoinDBT(HashJoinState *node)
 static bool
 ExecScanHashBucketDBT(HashJoinState *hjstate,
                       ExprContext *econtext, 
-                      bool outer)
+                      bool outer, HashJoinTable realHashTable)
 {
 	ExprState  *hjclauses = hjstate->hashclauses;
 	HashJoinTuple hashTuple = hjstate->hj_CurTuple;
 	uint32		hashvalue = hjstate->hj_CurHashValue;
     
     HashJoinTable hashtable;
-    if (outer) 
+    if (realHashTable != NULL)
+        hashtable  = realHashTable; 
+    else if (outer) 
         hashtable = hjstate->hj_OuterHashTable;
     else
         hashtable = hjstate->hj_HashTable; 

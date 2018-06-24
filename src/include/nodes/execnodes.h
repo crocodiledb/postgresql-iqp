@@ -1781,6 +1781,7 @@ typedef struct HashJoinState
 	TupleTableSlot *hj_FirstOuterTupleSlot;
     HashJoinTable     hj_OuterHashTable; /* totem: outer hash table */
     struct HashState *hj_OuterHashNode;   /* totem: outer hashstate node for hash table */
+    HashJoinTable  hj_RealHashTable;
     double      hj_buildtime; 
     double      hj_scantime;  
     double      hj_outertime;

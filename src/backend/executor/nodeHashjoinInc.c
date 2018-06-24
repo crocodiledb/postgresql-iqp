@@ -182,17 +182,24 @@ ExecHashJoinReal(PlanState *pstate)
 				/*
 				 * create the hash table
 				 */
-				hashtable = ExecHashTableCreate((Hash *) hashNode->ps.plan,
-												node->hj_HashOperators,
-												HJ_FILL_INNER(node));
-				node->hj_HashTable = hashtable;
+                if (incInfo->rightAction != PULL_DELTA)
+                {
+				    hashtable = ExecHashTableCreate((Hash *) hashNode->ps.plan,
+					    							node->hj_HashOperators,
+						    						HJ_FILL_INNER(node));
+                }
+                else
+                {
+                    hashtable = NULL;
+                }
 
-				/*
-				 * execute the Hash node, to build the hash table
-				 */
+    			node->hj_HashTable = hashtable;
+
+		    	/*
+	    		 * execute the Hash node, to build the hash table
+			     */
 				hashNode->hashtable = hashtable;
-				//(void) MultiExecProcNode((PlanState *) hashNode);
-                //
+
 				node->hj_JoinState = HJ_NEED_NEW_INNER;
 
                 break; 
@@ -206,30 +213,28 @@ ExecHashJoinReal(PlanState *pstate)
 		        if (TupIsNull(innerTupleSlot))
                 {	
                     
-                    /* resize the hash table if needed (NTUP_PER_BUCKET exceeded) */
-            	    if (hashtable->nbuckets != hashtable->nbuckets_optimal)
-		                ExecHashIncreaseNumBuckets(hashtable);
-
-            	    /* Account for the buckets in spaceUsed (reported in EXPLAIN ANALYZE) */
-                	hashtable->spaceUsed += hashtable->nbuckets * sizeof(HashJoinTuple);
-                	if (hashtable->spaceUsed > hashtable->spacePeak)
-		                hashtable->spacePeak = hashtable->spaceUsed;
-
                     node->hj_JoinState = HJ_NEED_NEW_OUTER; 
 
-    				/*
-    				 * If the inner relation is completely empty, and we're not
-    				 * doing a left outer join, we can quit without scanning the
-    				 * outer relation.
-    				 */
-    				if (hashtable->totalTuples == 0 && !HJ_FILL_OUTER(node))
-    					return NULL;
+                    if (hashtable != NULL)
+                    {
+                        /* resize the hash table if needed (NTUP_PER_BUCKET exceeded) */
+            	        if (hashtable->nbuckets != hashtable->nbuckets_optimal)
+		                    ExecHashIncreaseNumBuckets(hashtable);
+
+    			    	/*
+    			    	 * If the inner relation is completely empty, and we're not
+    			    	 * doing a left outer join, we can quit without scanning the
+    			    	 * outer relation.
+    			    	 */
+    			    	if (hashtable->totalTuples == 0 && !HJ_FILL_OUTER(node))
+    			    		return NULL;
     
-    				/*
-    				 * need to remember whether nbatch has increased since we
-    				 * began scanning the outer relation
-    				 */
-    				hashtable->nbatch_outstart = hashtable->nbatch;
+    			    	/*
+    			    	 * need to remember whether nbatch has increased since we
+    			    	 * began scanning the outer relation
+    			    	 */
+    			    	hashtable->nbatch_outstart = hashtable->nbatch;
+                    }
     
     				/*
     				 * Reset OuterNotEmpty for scan.  (It's OK if we fetched a
@@ -242,15 +247,18 @@ ExecHashJoinReal(PlanState *pstate)
                 }
 
                 /* We have to compute the hash value and insert the tuple */
-                econtext->ecxt_innertuple = innerTupleSlot;
-                if (ExecHashGetHashValue(hashtable, econtext, hashkeys,
-                						 false, hashtable->keepNulls,
-            							 &hashvalue))
-            	{
-            	    /* No skew optimization, so insert normally */
-            	    ExecHashTableInsert(hashtable, innerTupleSlot, hashvalue);
-            	    hashtable->totalTuples += 1;
-            	}
+                hashvalue = 0; 
+                if (hashtable != NULL)
+                {
+                    econtext->ecxt_innertuple = innerTupleSlot;
+                    (void) ExecHashGetHashValue(hashtable, econtext, hashkeys,
+                    						 false, hashtable->keepNulls,
+                							 &hashvalue);
+                	
+                	/* No skew optimization, so insert normally */
+                	ExecHashTableInsert(hashtable, innerTupleSlot, hashvalue);
+                	hashtable->totalTuples += 1;
+                }
 
                 /*
                  * Now probe the outer hash table if possible
@@ -258,6 +266,13 @@ ExecHashJoinReal(PlanState *pstate)
 
                 if (outerHashTable != NULL && TupIsDelta(innerTupleSlot))
                 {
+                    if (hashvalue == 0)
+                    {
+                        econtext->ecxt_innertuple = innerTupleSlot;
+                        (void) ExecHashGetHashValue(outerHashTable, econtext, hashkeys,
+        						                    false, HJ_FILL_INNER(node),
+        						                    &hashvalue);
+                    }
 		    		/*
 		    		 * Find the corresponding bucket for this tuple in the main
 		    		 * hash table or skew hash table.
@@ -338,9 +353,11 @@ ExecHashJoinReal(PlanState *pstate)
     		                ExecHashIncreaseNumBuckets(outerHashTable);
     
                 	    /* Account for the buckets in spaceUsed (reported in EXPLAIN ANALYZE) */
-                    	outerHashTable->spaceUsed += outerHashTable->nbuckets * sizeof(HashJoinTuple);
+                    	/*
+                        outerHashTable->spaceUsed += outerHashTable->nbuckets * sizeof(HashJoinTuple);
                     	if (outerHashTable->spaceUsed > outerHashTable->spacePeak)
     		                outerHashTable->spacePeak = outerHashTable->spaceUsed;
+                        */
                     }
                     return NULL;
                 }
@@ -764,7 +781,12 @@ ExecHashJoinMemoryCost(HashJoinState * node, bool * estimate, bool right)
         }
         else
         {
-            return (int)((node->hj_HashTable->spaceUsed + 1023) / 1024); 
+            HashJoinTable hashtable = node->hj_HashTable; 
+            int bucketSpace = hashtable->nbuckets * sizeof(HashJoinTuple);
+	        if (hashtable->spaceUsed + bucketSpace > hashtable->spacePeak)
+		        hashtable->spacePeak = hashtable->spaceUsed + bucketSpace;
+
+            return (int)((hashtable->spaceUsed + bucketSpace + 1023) / 1024); 
         }
     }
     else
@@ -777,7 +799,12 @@ ExecHashJoinMemoryCost(HashJoinState * node, bool * estimate, bool right)
         }
         else
         {
-            return (int)((node->hj_OuterHashTable->spaceUsed + 1023) / 1024); 
+            HashJoinTable hashtable = node->hj_OuterHashTable; 
+            int bucketSpace = hashtable->nbuckets * sizeof(HashJoinTuple);
+	        if (hashtable->spaceUsed + bucketSpace > hashtable->spacePeak)
+		        hashtable->spacePeak = hashtable->spaceUsed + bucketSpace;
+
+            return (int)((hashtable->spaceUsed + bucketSpace + 1023) / 1024); 
         }
     }
 }

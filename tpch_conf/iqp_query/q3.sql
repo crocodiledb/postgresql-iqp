@@ -7,9 +7,9 @@ set tpch_delta_mode to uniform;
 set bd_prob to 0.5; 
 
 set enable_incremental to on;
-set tpch_updates to 'lineitem';
+set tpch_updates to 'customer';
 set iqp_query to 'q3';
-set gen_mem_info to on; 
+set gen_mem_info to off; 
 
 select
 	i3_l_orderkey,

@@ -1,5 +1,5 @@
 set enable_incremental to off;
-set tpch_updates to 'lineitem';
+set tpch_updates to 'customer';
 set max_parallel_workers_per_gather to 0;
 set work_mem to 1000000;
 
@@ -26,3 +26,4 @@ group by
 order by
 	revenue desc,
 	q3_orderdate; 
+

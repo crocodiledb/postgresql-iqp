@@ -71,7 +71,7 @@ typedef struct DBTStat
     FILE    *timeFile; 
     FILE    *memFile;   
     double  *execTime;
-    int      memCost; 
+    int     *memCost; 
 } DBTStat; 
 
 typedef struct DBToaster 

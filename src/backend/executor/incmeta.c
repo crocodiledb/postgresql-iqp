@@ -346,7 +346,8 @@ ExecIncRun(EState *estate, PlanState *planstate)
         /* step 7. init for delta processing */
         ExecInitDelta(planstate); 
 
-        TakeNewSnapshot(estate);     
+        if (estate->deltaIndex > 1)
+            TakeNewSnapshot(estate); 
     }
 
     (void) MemoryContextSwitchTo(old);

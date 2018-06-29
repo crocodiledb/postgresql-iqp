@@ -643,7 +643,7 @@ ExecBuildDBTConf()
                                 cur_mat->left[j], cur_mat->left[j], cur_mat->joinkey[j][0], \ 
                                 cur_mat->right[j], cur_mat->right[j], cur_mat->joinkey[j][0], \ 
                                 cur_mat->left[j], cur_mat->left[j], cur_mat->joinkey[j][1], \ 
-                                cur_mat->left[j], cur_mat->left[j], cur_mat->joinkey[j][1]); 
+                                cur_mat->right[j], cur_mat->right[j], cur_mat->joinkey[j][1]); 
                     }
                     else
                     {

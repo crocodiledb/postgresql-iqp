@@ -9,8 +9,8 @@ set enable_mergejoin to off;
 set dbt_query to 'q3';
 set enable_dbtoaster to on;
 
-set tpch_delta_mode to uniform; 
-set bd_prob to 0.9; 
+set tpch_delta_mode to binomial; 
+set bd_prob to 0.99; 
 
 select
 	q3_orderkey, 

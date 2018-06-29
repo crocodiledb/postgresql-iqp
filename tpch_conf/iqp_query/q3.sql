@@ -3,8 +3,8 @@ set work_mem to 1000000;
 set memory_budget to 1500000;
 set decision_method to dp;
 
-set tpch_delta_mode to uniform; 
-set bd_prob to 0.5; 
+set tpch_delta_mode to binomial; 
+set bd_prob to 0.99; 
 
 set enable_incremental to on;
 set tpch_updates to 'customer';

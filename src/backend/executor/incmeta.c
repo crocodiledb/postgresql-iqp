@@ -294,6 +294,7 @@ ExecIncRun(EState *estate, PlanState *planstate)
 
     if (estate->es_isSelect) 
     {
+        TakeNewSnapshot(estate); 
 
         /* step 1. estimate and propagate update */
         //ExecEstimateUpdate(estate, false);
@@ -345,9 +346,6 @@ ExecIncRun(EState *estate, PlanState *planstate)
 
         /* step 7. init for delta processing */
         ExecInitDelta(planstate); 
-
-        if (estate->deltaIndex > 1)
-            TakeNewSnapshot(estate); 
     }
 
     (void) MemoryContextSwitchTo(old);

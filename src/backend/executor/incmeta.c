@@ -66,6 +66,8 @@ bool use_sym_hashjoin = true;
 bool use_default_tpch = false;
 bool know_dist_only = false; 
 
+bool useBruteForce = false; 
+
 char *incTagName[INC_TAG_NUM] = {"INVALID", "HASHJOIN", "MERGEJOIN", "NESTLOOP", "AGGHASH", "AGGSORT", 
     "SORT", "MATERIAL", "SEQSCAN", "INDEXSCAN"}; 
 
@@ -185,17 +187,12 @@ ExecIncStart(EState *estate, PlanState *ps)
         if (delta_mode == TPCH_DEFAULT)
             use_default_tpch = true;  
 
+        /* Round memory budget to MB to reduce DP running time */
+        estate->es_incMemory = (memory_budget + 1023)/1024; 
         if (decision_method == DM_DP)
         {
-            /* Round memory budget to MB to reduce DP running time */
-            estate->es_incMemory = (memory_budget + 1023)/1024; 
-    
             /* Create DPMeta for managing DP meta data */
             estate->dpmeta = BuildDPMeta(estate->es_numIncInfo, estate->es_incMemory); 
-        }
-        else
-        {
-            estate->es_incMemory = memory_budget; 
         }
     
         /* For Stat*/
@@ -901,16 +898,14 @@ ExecCollectCostInfo(IncInfo *incInfo, bool compute, bool memory)
                 {
                     incInfo->memory_cost[RIGHT_STATE] = ExecHashJoinMemoryCost((HashJoinState *) ps, &estimate, true);
                     incInfo->mem_computed[RIGHT_STATE] = !estimate;
-                    if (decision_method == DM_DP)
-                        incInfo->memory_cost[RIGHT_STATE] = (incInfo->memory_cost[RIGHT_STATE] + 1023) / 1024; 
+                    incInfo->memory_cost[RIGHT_STATE] = (incInfo->memory_cost[RIGHT_STATE] + 1023) / 1024; 
                 }
 
                 if (!incInfo->mem_computed[LEFT_STATE]) 
                 {
                     incInfo->memory_cost[LEFT_STATE] = ExecHashJoinMemoryCost((HashJoinState *) ps, &estimate, false);
                     incInfo->mem_computed[LEFT_STATE] = !estimate; 
-                    if (decision_method == DM_DP)
-                        incInfo->memory_cost[LEFT_STATE] = (incInfo->memory_cost[LEFT_STATE] + 1023) / 1024; 
+                    incInfo->memory_cost[LEFT_STATE] = (incInfo->memory_cost[LEFT_STATE] + 1023) / 1024; 
                 }
             }
             ExecCollectCostInfo(incInfo->lefttree, compute, memory); 
@@ -955,8 +950,7 @@ ExecCollectCostInfo(IncInfo *incInfo, bool compute, bool memory)
             {
                 incInfo->memory_cost[LEFT_STATE]  = ExecNestLoopMemoryCost((NestLoopState *) ps, &estimate);
                 incInfo->mem_computed[LEFT_STATE] = !estimate; 
-                if (decision_method == DM_DP)
-                    incInfo->memory_cost[LEFT_STATE] = (incInfo->memory_cost[LEFT_STATE] + 1023) / 1024; 
+                incInfo->memory_cost[LEFT_STATE] = (incInfo->memory_cost[LEFT_STATE] + 1023) / 1024; 
             }
 
             ExecCollectCostInfo(incInfo->lefttree, compute, memory); 
@@ -985,8 +979,7 @@ ExecCollectCostInfo(IncInfo *incInfo, bool compute, bool memory)
             {
                 incInfo->memory_cost[LEFT_STATE] = ExecAggMemoryCost((AggState *) ps, &estimate); 
                 incInfo->mem_computed[LEFT_STATE] = !estimate; 
-                if (decision_method == DM_DP)
-                    incInfo->memory_cost[LEFT_STATE] = (incInfo->memory_cost[LEFT_STATE] + 1023) / 1024; 
+                incInfo->memory_cost[LEFT_STATE] = (incInfo->memory_cost[LEFT_STATE] + 1023) / 1024; 
             }
 
             ExecCollectCostInfo(incInfo->lefttree, compute, memory); 
@@ -1004,8 +997,7 @@ ExecCollectCostInfo(IncInfo *incInfo, bool compute, bool memory)
             {
                 incInfo->memory_cost[LEFT_STATE] = ExecAggMemoryCost((AggState *) ps, &estimate); 
                 incInfo->mem_computed[LEFT_STATE] = !estimate; 
-                if (decision_method == DM_DP)
-                    incInfo->memory_cost[LEFT_STATE] = (incInfo->memory_cost[LEFT_STATE] + 1023) / 1024; 
+                incInfo->memory_cost[LEFT_STATE] = (incInfo->memory_cost[LEFT_STATE] + 1023) / 1024; 
             }
             ExecCollectCostInfo(incInfo->lefttree, compute, memory); 
             break; 
@@ -1022,8 +1014,7 @@ ExecCollectCostInfo(IncInfo *incInfo, bool compute, bool memory)
             {
                 incInfo->memory_cost[LEFT_STATE] = ExecSortMemoryCost((SortState *) ps, &estimate); 
                 incInfo->mem_computed[LEFT_STATE] = !estimate; 
-                if (decision_method == DM_DP)
-                    incInfo->memory_cost[LEFT_STATE] = (incInfo->memory_cost[LEFT_STATE] + 1023) / 1024; 
+                incInfo->memory_cost[LEFT_STATE] = (incInfo->memory_cost[LEFT_STATE] + 1023) / 1024; 
             }
             ExecCollectCostInfo(incInfo->lefttree, compute, memory); 
             break;
@@ -1053,8 +1044,7 @@ ExecCollectCostInfo(IncInfo *incInfo, bool compute, bool memory)
                     incInfo->memory_cost[LEFT_STATE] = ExecMaterialIncMemoryCost((MaterialIncState *) ps); 
                     incInfo->mem_computed[LEFT_STATE] = true; 
                 }
-                if (decision_method == DM_DP)
-                    incInfo->memory_cost[LEFT_STATE] = (incInfo->memory_cost[LEFT_STATE] + 1023) / 1024; 
+                incInfo->memory_cost[LEFT_STATE] = (incInfo->memory_cost[LEFT_STATE] + 1023) / 1024; 
             }
             ExecCollectCostInfo(incInfo->lefttree, compute, memory); 
             break; 
@@ -1068,14 +1058,21 @@ ExecCollectCostInfo(IncInfo *incInfo, bool compute, bool memory)
 static void 
 ExecDecideState(DPMeta *dpmeta, IncInfo **incInfoArray, int numIncInfo, int incMemory, bool isSlave)
 {
-    if (decision_method == DM_DP) 
+    if (useBruteForce)
     {
-        ExecDPSolution(dpmeta, incInfoArray, numIncInfo, incMemory, isSlave);
-        ExecDPAssignState(dpmeta, incInfoArray, numIncInfo - 1, incMemory, PULL_DELTA);
+        ExecBruteForce(incInfoArray, numIncInfo, incMemory); 
     }
-    else
+    else 
     {
-        ExecGreedySolution(incInfoArray, numIncInfo, incMemory, decision_method); 
+        if (decision_method == DM_DP) 
+        {
+            ExecDPSolution(dpmeta, incInfoArray, numIncInfo, incMemory, isSlave);
+            ExecDPAssignState(dpmeta, incInfoArray, numIncInfo - 1, incMemory, PULL_DELTA);
+        }
+        else
+        {
+            ExecGreedySolution(incInfoArray, numIncInfo, incMemory, decision_method); 
+        }
     }
 }
 
@@ -1662,7 +1659,7 @@ static QueryDesc * ExecIQPBuildPS(EState *estate, char *sqlstr)
 }
 
 
-#define STR_BUFSIZE 200
+#define STR_BUFSIZE 500
 
 static iqp_base * ExecBuildIQPBase(EState *estate, char *query_conf)
 {

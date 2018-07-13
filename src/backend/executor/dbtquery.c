@@ -40,6 +40,19 @@
 #define Q10_L       78623
 #define Q10_N_C     78608
 
+#define Q1          82218
+
+#define Q6          82269
+
+#define Q12_O       82233
+#define Q12_L       82236
+
+#define Q14_P       82281
+#define Q14_L       82284
+
+#define Q19_P       90489
+#define Q19_L       90492
+
 Oid DBT_GetOid(char *query, char *table_name)
 {
     if (strcmp(query, "q3") == 0)
@@ -129,6 +142,41 @@ Oid DBT_GetOid(char *query, char *table_name)
             return Q10_L; 
         else if (strcmp(table_name, "q10_n_c") == 0)
             return Q10_N_C; 
+        else
+            return 0;  
+    }
+    else if (strcmp(query, "q1") == 0)
+    {
+        return Q1;
+    }
+    else if (strcmp(query, "q6") == 0)
+    {
+        return Q6;
+    }
+    else if (strcmp(query, "q12") == 0)
+    {
+        if (strcmp(table_name, "q12_o") == 0)
+            return Q12_O;
+        else if (strcmp(table_name, "q12_l") == 0)
+            return Q12_L;
+        else
+            return 0;  
+    }
+    else if (strcmp(query, "q14") == 0)
+    {
+        if (strcmp(table_name, "q14_p") == 0)
+            return Q14_P;
+        else if (strcmp(table_name, "q14_l") == 0)
+            return Q14_L;
+        else
+            return 0;  
+    }
+    else if (strcmp(query, "q19") == 0)
+    {
+        if (strcmp(table_name, "q19_p") == 0)
+            return Q19_P;
+        else if (strcmp(table_name, "q19_l") == 0)
+            return Q19_L;
         else
             return 0;  
     }

@@ -42,6 +42,19 @@
 #define I10_L  78895
 #define I10_N  78901
 
+#define I1_L   90510
+
+#define I6_L   90516
+
+#define I12_O  90525
+#define I12_L  90522
+
+#define I14_P  90534
+#define I14_L  90528
+
+#define I19_P  90543
+#define I19_L  90537
+
 
 Oid IQP_GetOid(char *query, char *table_name)
 {
@@ -136,6 +149,47 @@ Oid IQP_GetOid(char *query, char *table_name)
             return I10_L;
         else if (strcmp(table_name, "i10_n") == 0)
             return I10_N;
+        else
+            return 0;  
+    }
+    else if (strcmp(query, "q1") == 0)
+    {
+        if (strcmp(table_name, "i1_l") == 0)
+            return I1_L;
+        else
+            return 0; 
+    }
+    else if (strcmp(query, "q6") == 0)
+    {
+        if (strcmp(table_name, "i6_l") == 0)
+            return I6_L;
+        else
+            return 0;
+    }
+    else if (strcmp(query, "q12") == 0)
+    {
+        if (strcmp(table_name, "i12_o") == 0)
+            return I12_O;
+        else if (strcmp(table_name, "i12_l") == 0)
+            return I12_L;
+        else
+            return 0;  
+    }
+    else if (strcmp(query, "q14") == 0)
+    {
+        if (strcmp(table_name, "i14_p") == 0)
+            return I14_P;
+        else if (strcmp(table_name, "i14_l") == 0)
+            return I14_L;
+        else
+            return 0;  
+    }
+    else if (strcmp(query, "q19") == 0)
+    {
+        if (strcmp(table_name, "i19_p") == 0)
+            return I19_P;
+        else if (strcmp(table_name, "i19_l") == 0)
+            return I19_L;
         else
             return 0;  
     }

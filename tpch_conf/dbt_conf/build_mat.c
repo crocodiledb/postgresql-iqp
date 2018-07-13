@@ -25,7 +25,7 @@
 
 #define NULL_STR "null"
 
-char *dbt_query = "q8"; 
+char *dbt_query = "q19"; 
 
 typedef struct Base
 {

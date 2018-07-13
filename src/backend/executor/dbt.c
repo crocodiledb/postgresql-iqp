@@ -148,6 +148,13 @@ ExecDBToaster(EState *estate, PlanState *root)
                     if (TupIsNull(slot))
                         break;
 
+                    /* Special case for one agg */
+                    if (mat->additional_ps != NULL)
+                    {
+                        mat->additional_ps->ps_WorkingTupleSlot = slot; 
+                        (void) mat->additional_ps->ExecProcNode(mat->additional_ps); // must be a HashAGG
+                    }
+
                     count++; 
     
                     for (int j = 0; j < mat->parent_num[i]; j++)
@@ -761,9 +768,9 @@ ExecBuildDBTConf()
         {
             if (cur_mat->joinkey_num[j] != 0)
             {
-                //memset(temp_str, 0, STR_BUFSIZE); 
-                //sprintf(temp_str, DROP_TABLE_TEMPLATE, cur_mat->tmptable[j]); 
-                //system(temp_str); 
+                memset(temp_str, 0, STR_BUFSIZE); 
+                sprintf(temp_str, DROP_TABLE_TEMPLATE, cur_mat->tmptable[j]); 
+                system(temp_str); 
 
                 memset(temp_str, 0, STR_BUFSIZE); 
                 sprintf(temp_str, CREATE_TABLE_TEMPLATE, cur_mat->tmptable[j], cur_mat->mainsql[j]); 

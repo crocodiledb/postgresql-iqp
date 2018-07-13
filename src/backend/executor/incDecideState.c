@@ -31,6 +31,8 @@
 #define BD_KEEPRIGHT    5
 #define JOIN_OPTIONS    6
 
+bool OptDP = true;
+
 /* Helper functions for DP Algorithms */
 
 static void SimpleDropDP(DPMeta *dpmeta, int i, int j, IncInfo *incInfo); 
@@ -130,6 +132,69 @@ BuildDPMeta(int numIncInfo, int incMemory)
     return dpmeta; 
 }
 
+static 
+void ExecOptDP(DPMeta *dpmeta, IncInfo *incInfo, int i, int incMemory, bool *accessed)
+{
+    memset(accessed, 0, sizeof(bool) * (incMemory + 1));
+    int start, end; 
+    int step = 1; 
+    int j = 0; 
+
+    for(;;)
+    {
+        if (j > incMemory)
+            break; 
+
+        start = j;
+        if (!accessed[start])
+        {
+            accessed[start] = true;
+            incInfo->execDPNode(dpmeta, i, start, incInfo); 
+        }
+
+        end = start + step; 
+        if (end > incMemory)
+            end = incMemory; 
+
+        if (!accessed[end])
+        {
+            accessed[end] = true; 
+            incInfo->execDPNode(dpmeta, i, end, incInfo); 
+        }
+
+        if (dpmeta->bdCost[i][start] == dpmeta->bdCost[i][end] && dpmeta->deltaCost[i][start] == dpmeta->deltaCost[i][end])
+        {
+            j = end + 1; 
+            step = step * 2; 
+            for (int k = start + 1; k < end; k++)
+            {
+                accessed[k] = true; 
+
+                dpmeta->deltaCost[i][k] =  dpmeta->deltaCost[i][start];
+                dpmeta->deltaMemLeft[i][k] =  dpmeta->deltaMemLeft[i][start];
+                dpmeta->deltaMemRight[i][k] = dpmeta->deltaMemRight[i][start]; 
+                dpmeta->deltaIncState[i][k][LEFT_STATE] =dpmeta->deltaIncState[i][start][LEFT_STATE];
+                dpmeta->deltaIncState[i][k][RIGHT_STATE] = dpmeta->deltaIncState[i][start][RIGHT_STATE];
+                dpmeta->deltaLeftPull[i][k] = dpmeta->deltaLeftPull[i][start];
+                dpmeta->deltaRightPull[i][k] =  dpmeta->deltaRightPull[i][start]; 
+    
+                dpmeta->bdCost[i][k] = dpmeta->bdCost[i][start];
+                dpmeta->bdMemLeft[i][k] =  dpmeta->bdMemLeft[i][start];
+                dpmeta->bdMemRight[i][k] = dpmeta->bdMemRight[i][start];
+                dpmeta->bdIncState[i][k][LEFT_STATE] = dpmeta->bdIncState[i][start][LEFT_STATE];
+                dpmeta->bdIncState[i][k][RIGHT_STATE] = dpmeta->bdIncState[i][start][RIGHT_STATE]; 
+                dpmeta->bdLeftPull[i][k] = dpmeta->bdLeftPull[i][start];
+                dpmeta->bdRightPull[i][k] = dpmeta->bdRightPull[i][start]; 
+            } 
+        }
+        else
+        {
+            j++; 
+            step = 1;
+        }
+    }
+}
+
 void 
 ExecDPSolution(DPMeta *dpmeta, IncInfo **incInfoArray, int numIncInfo, int incMemory, bool isSlave)
 {
@@ -206,16 +271,28 @@ ExecDPSolution(DPMeta *dpmeta, IncInfo **incInfoArray, int numIncInfo, int incMe
         }
     }
 
+    bool *accessed = palloc(sizeof(bool) * (incMemory + 1)); 
+
     for (i = 0; i < numIncInfo; i++)
     {
         incInfo = incInfoArray[i]; 
         if (incInfo->execDPNode == NULL) /* leaf nodes */
             continue; 
 
-        for (j = 0; j <= incMemory; j++)
-            incInfo->execDPNode(dpmeta, i, j, incInfo); 
+
+        if (OptDP)
+        {
+            ExecOptDP(dpmeta, incInfo, i, incMemory, accessed);
+        }
+        else
+        {
+            for (j = 0; j <= incMemory; j++)
+                incInfo->execDPNode(dpmeta, i, j, incInfo); 
+        }
+        
     }
 
+    pfree(accessed); 
 }
 
 void
@@ -262,7 +339,7 @@ ExecDPAssignState (DPMeta *dpmeta, IncInfo **incInfoArray, int i, int j, PullAct
             }
             else
             {
-                elog(ERROR, "Join: PULL_BATCH should not exist"); 
+                elog(ERROR, "Join: PULL_BATCH or PULL_NOTHING should not exist"); 
             }
             break;
 
@@ -993,7 +1070,7 @@ HashJoinDPBothUpdate (DPMeta *dpmeta, int i, int j, IncInfo *incInfo)
                 && j >= (left_mcost + right_mcost) && k <= j - (left_mcost + right_mcost))
         {
             rightMem = j - left_mcost - right_mcost; 
-            tempCost = deltaCost[left][leftMem] + deltaCost[right][rightMem] + incInfo->delta_cost[LEFT_STATE];
+            tempCost = deltaCost[left][leftMem] + incInfo->keep_cost[LEFT_STATE] + deltaCost[right][rightMem] + incInfo->delta_cost[LEFT_STATE];
             if (tempCost < cand_cost[DELTA_KEEPBOTH])
                 SetCostInfo(cand_cost, cand_memleft, cand_memright, tempCost, leftMem, rightMem, DELTA_KEEPBOTH); 
         }
@@ -1026,99 +1103,377 @@ HashJoinDPBothUpdate (DPMeta *dpmeta, int i, int j, IncInfo *incInfo)
 
 /* Helper functions for Greedy Algorithms */
 
+typedef struct GreedyMem
+{
+    IncInfo *incInfo;
+    bool    left;
+    int     memory_size;
+}GreedyMem; 
+
+static GreedyMem **BuildGreedyMem(IncInfo **incInfo_array, int numIncInfo)
+{
+    GreedyMem **memArray = (GreedyMem **)palloc(sizeof(GreedyMem *) * (numIncInfo * MAX_STATE)); 
+    for (int i = 0; i < numIncInfo * MAX_STATE; i++)
+    {
+        memArray[i] = (GreedyMem *)palloc(sizeof(GreedyMem)); 
+
+        int j = i / MAX_STATE;
+        bool left = (i % MAX_STATE == 0);
+
+        memArray[i]->incInfo = incInfo_array[j]; 
+        memArray[i]->left = left;
+        if (left)
+            memArray[i]->memory_size = incInfo_array[j]->memory_cost[LEFT_STATE];
+        else
+            memArray[i]->memory_size = incInfo_array[j]->memory_cost[RIGHT_STATE];
+    }
+
+    return memArray;
+}
+
+static void DestroyGreedyMem(GreedyMem **memArray, int numGreedyMem)
+{
+    for (int i = 0; i < numGreedyMem; i++)
+    {
+        pfree(memArray[i]); 
+    }
+
+    pfree(memArray); 
+}
+
 static int MemComparator(const void * a, const void *b)
 {
-    IncInfo *a_incInfo = *(IncInfo **)a;
-    IncInfo *b_incInfo = *(IncInfo **)b; 
+    GreedyMem *a_GM = *(GreedyMem **)a;
+    GreedyMem *b_GM = *(GreedyMem **)b;
 
-    int a_memory = a_incInfo->memory_cost[LEFT_STATE], b_memory = b_incInfo->memory_cost[LEFT_STATE]; 
-
-    if (a_incInfo->type == INC_HASHJOIN || a_incInfo->type == INC_NESTLOOP)
-        a_memory = a_incInfo->memory_cost[RIGHT_STATE];
-
-    if (b_incInfo->type == INC_HASHJOIN || b_incInfo->type == INC_NESTLOOP)
-        b_memory = b_incInfo->memory_cost[RIGHT_STATE];
+    int a_memory = a_GM->memory_size, b_memory = b_GM->memory_size;
 
     return (a_memory - b_memory); 
 }
 
 void 
 ExecGreedySolution(IncInfo **incInfo_array, int numIncInfo, int incMemory, DecisionMethod dm)
-{        
+{
+    GreedyMem **GM_array = BuildGreedyMem(incInfo_array, numIncInfo);
+    int numGM = numIncInfo * MAX_STATE; 
+
     if (dm == DM_MEMSMALLFIRST || dm == DM_MEMBIGFIRST)
-            qsort((void *)incInfo_array, (size_t)numIncInfo, sizeof(IncInfo *), MemComparator);
+            qsort((void *)GM_array, (size_t)numGM, sizeof(GreedyMem *), MemComparator);
 
 
     if (dm == DM_TOPDOWN || dm == DM_MEMBIGFIRST)
     {
-        for (int i = numIncInfo - 1; i >=0; i--)
+        for (int i = numGM - 1; i >=0; i--)
         {
-            IncInfo *incInfo = incInfo_array[i];
-            int tmp_memory = incInfo->memory_cost[LEFT_STATE]; 
-            if (incInfo->type == INC_HASHJOIN || incInfo->type == INC_NESTLOOP)
-                tmp_memory = incInfo->memory_cost[RIGHT_STATE]; 
-            if (tmp_memory < incMemory)
+            GreedyMem *GM = GM_array[i];
+            int tmp_memory = GM->memory_size;
+            if (tmp_memory != 0 && tmp_memory < incMemory)
             {
-                ExecGreedyAssignState(incInfo, STATE_KEEPMEM); 
+                if (GM->left)
+                    GM->incInfo->incState[LEFT_STATE] =  STATE_KEEPMEM;
+                else
+                    GM->incInfo->incState[RIGHT_STATE] =  STATE_KEEPMEM;
+
                 incMemory -= tmp_memory; 
             }
         }
     }
     else
     {
-        for (int i = 0; i < numIncInfo; i++)
+        for (int i = 0; i < numGM; i++)
         {
-            IncInfo *incInfo = incInfo_array[i];
-            int tmp_memory = incInfo->memory_cost[LEFT_STATE]; 
-            if (incInfo->type == INC_HASHJOIN || incInfo->type == INC_NESTLOOP)
-                tmp_memory = incInfo->memory_cost[RIGHT_STATE]; 
-            if (tmp_memory < incMemory)
+            GreedyMem *GM = GM_array[i];
+            int tmp_memory = GM->memory_size;
+            if (tmp_memory != 0 && tmp_memory < incMemory)
             {
-                ExecGreedyAssignState(incInfo, STATE_KEEPMEM); 
+                if (GM->left)
+                    GM->incInfo->incState[LEFT_STATE] =  STATE_KEEPMEM;
+                else
+                    GM->incInfo->incState[RIGHT_STATE] =  STATE_KEEPMEM;
+
                 incMemory -= tmp_memory; 
             }
         }
     }
+
+    DestroyGreedyMem(GM_array, numGM);
 }
 
-static void 
-ExecGreedyAssignState(IncInfo *incInfo, IncState state)
+static int 
+ExecBFCalCost(IncInfo *root, PullAction pullAction)
 {
-    int id = incInfo->id; 
-    switch(incInfo->type)
+    int cost = 0;
+    switch(root->type)
     {
         case INC_HASHJOIN:
-            incInfo->incState[RIGHT_STATE] = state;
-            break;
+            if (root->leftUpdate && !root->rightUpdate)
+            {
+                if (pullAction == PULL_DELTA)
+                {
+                    if (root->incState[RIGHT_STATE] == STATE_KEEPMEM)
+                        cost += ExecBFCalCost(root->lefttree, PULL_DELTA) + root->delta_cost[RIGHT_STATE];
+                    else
+                        cost += ExecBFCalCost(root->lefttree, PULL_DELTA) + ExecBFCalCost(root->righttree, PULL_BATCH_DELTA) + \ 
+                            root->prepare_cost[RIGHT_STATE] + root->delta_cost[RIGHT_STATE];
+                }
+                else
+                {
+                    if (root->incState[RIGHT_STATE] == STATE_KEEPMEM)
+                        cost += ExecBFCalCost(root->lefttree, PULL_BATCH_DELTA) + \ 
+                            root->compute_cost + root->delta_cost[RIGHT_STATE];
+                    else
+                        cost += ExecBFCalCost(root->lefttree, PULL_BATCH_DELTA) + ExecBFCalCost(root->righttree, PULL_BATCH_DELTA) + \ 
+                            root->prepare_cost[RIGHT_STATE] + root->compute_cost + root->delta_cost[RIGHT_STATE];
+                }
 
-        case INC_MERGEJOIN:
-            elog(ERROR, "not supported MergeJoin yet"); 
-            break;
+                if (root->incState[LEFT_STATE] == STATE_KEEPMEM)
+                    cost += root->keep_cost[LEFT_STATE]; 
+            }
+            else if (!root->leftUpdate && root->rightUpdate)
+            {
+                if (pullAction == PULL_DELTA)
+                {
+                    if (root->incState[LEFT_STATE] == STATE_KEEPMEM)
+                        cost += root->keep_cost[LEFT_STATE] + ExecBFCalCost(root->righttree, PULL_DELTA) + root->delta_cost[LEFT_STATE];
+                    else
+                        cost += ExecBFCalCost(root->lefttree, PULL_BATCH_DELTA) + ExecBFCalCost(root->righttree, PULL_DELTA) \
+                                + root->delta_cost[LEFT_STATE]; 
+                }
+                else
+                {
+                    if (root->incState[RIGHT_STATE] == STATE_KEEPMEM)
+                        cost += ExecBFCalCost(root->lefttree, PULL_BATCH_DELTA) + ExecBFCalCost(root->righttree, PULL_DELTA) + root->compute_cost \ 
+                            + root->delta_cost[RIGHT_STATE];
+                    else
+                        cost += ExecBFCalCost(root->lefttree, PULL_BATCH_DELTA) + ExecBFCalCost(root->righttree, PULL_DELTA) + root->compute_cost \ 
+                            + root->delta_cost[RIGHT_STATE] + root->prepare_cost[RIGHT_STATE];
 
-        case INC_NESTLOOP:
-            incInfo->incState[RIGHT_STATE] = STATE_DROP;
+                    if (root->incState[LEFT_STATE] == STATE_KEEPMEM)
+                        cost += root->keep_cost[LEFT_STATE]; 
+                }
+            }
+            else if (root->leftUpdate && root->rightUpdate)
+            {
+                if (pullAction == PULL_DELTA)
+                {
+                    if (root->incState[LEFT_STATE] == STATE_DROP && root->incState[RIGHT_STATE] == STATE_DROP)
+                        cost += ExecBFCalCost(root->lefttree, PULL_BATCH_DELTA) + ExecBFCalCost(root->righttree, PULL_BATCH_DELTA) \ 
+                            + root->prepare_cost[RIGHT_STATE] + root->delta_cost[RIGHT_STATE]; 
+                    else if (root->incState[LEFT_STATE] == STATE_DROP && root->incState[RIGHT_STATE] == STATE_KEEPMEM)
+                        cost += ExecBFCalCost(root->lefttree, PULL_BATCH_DELTA) + ExecBFCalCost(root->righttree, PULL_DELTA) \
+                                + root->delta_cost[RIGHT_STATE];
+                    else if (root->incState[LEFT_STATE] == STATE_KEEPMEM && root->incState[RIGHT_STATE] == STATE_DROP)
+                        cost += ExecBFCalCost(root->lefttree, PULL_DELTA) + ExecBFCalCost(root->righttree, PULL_BATCH_DELTA) \
+                                + root->keep_cost[LEFT_STATE] + root->prepare_cost[RIGHT_STATE] + root->delta_cost[LEFT_STATE]; 
+                    else
+                        cost += ExecBFCalCost(root->lefttree, PULL_DELTA) + ExecBFCalCost(root->righttree, PULL_DELTA) \ 
+                            + root->keep_cost[LEFT_STATE] + root->delta_cost[LEFT_STATE]; 
+                }
+                else
+                {
+                    if (root->incState[RIGHT_STATE] == STATE_DROP)
+                        cost += ExecBFCalCost(root->lefttree, PULL_BATCH_DELTA) + ExecBFCalCost(root->righttree, PULL_BATCH_DELTA) \ 
+                            + root->prepare_cost[RIGHT_STATE] + root->compute_cost + root->delta_cost[RIGHT_STATE];
+                    else
+                        cost += ExecBFCalCost(root->lefttree, PULL_BATCH_DELTA) + ExecBFCalCost(root->righttree, PULL_DELTA) \ 
+                            + root->compute_cost + root->delta_cost[RIGHT_STATE];
+
+                    if (root->incState[LEFT_STATE] == STATE_KEEPMEM)
+                        cost += root->keep_cost[LEFT_STATE]; 
+                }
+            }
+            else
+                elog(ERROR, "Brutefore does not support it"); 
             break;
 
         case INC_SEQSCAN:
-        case INC_INDEXSCAN:
-            return; 
-            break; 
-
-        case INC_AGGSORT:
-            incInfo->incState[LEFT_STATE] = STATE_DROP; 
-            break; 
+            if (pullAction == PULL_DELTA)
+                cost = 0;
+            else 
+                cost += root->prepare_cost[LEFT_STATE] + root->compute_cost; 
+            break;
 
         case INC_AGGHASH:
-        case INC_MATERIAL:
-        case INC_SORT:
-            incInfo->incState[LEFT_STATE] = state; 
+            if (pullAction == PULL_DELTA)
+            {
+                if (root->incState[LEFT_STATE] == STATE_DROP)
+                    cost += ExecBFCalCost(root->lefttree, PULL_BATCH_DELTA) + root->prepare_cost[LEFT_STATE] + DELTA_COST;
+                else
+                    cost += ExecBFCalCost(root->lefttree, PULL_DELTA) + DELTA_COST; 
+            }
+            else
+            {
+                if (root->incState[LEFT_STATE] == STATE_DROP)
+                    cost += ExecBFCalCost(root->lefttree, PULL_BATCH_DELTA) + root->prepare_cost[LEFT_STATE] + DELTA_COST + root->compute_cost; 
+                else
+                    cost += ExecBFCalCost(root->lefttree, PULL_DELTA) + DELTA_COST + root->compute_cost;  
+            }
+
             break; 
 
+        case INC_MATERIAL:
+            if (pullAction == PULL_DELTA)
+            {
+                if (root->incState[LEFT_STATE] == STATE_DROP)
+                    cost += ExecBFCalCost(root->lefttree, PULL_DELTA);
+                else
+                    cost += root->keep_cost[LEFT_STATE];
+            }
+            else
+            {
+                if (root->incState[LEFT_STATE] == STATE_DROP)
+                    cost += ExecBFCalCost(root->lefttree, PULL_BATCH_DELTA); 
+                else
+                    cost += ExecBFCalCost(root->lefttree, PULL_DELTA) + root->keep_cost[LEFT_STATE]; 
+            }
+            break; 
 
         default:
-            elog(ERROR, "GreedyAssignState unrecognized nodetype: %u", incInfo->type);
-            break; 
-            return; 
+            elog(ERROR, "Bruteforce does not support unrecognized nodetype: %u", root->type);
+            return 0; 
     }
+
+    return cost; 
 }
 
+void 
+ExecBruteForce(IncInfo **incInfo_array, int numIncInfo, int incMemory)
+{
+    IncInfo *incInfo;
+
+    int numState = 0;
+    for (int i = 0; i < numIncInfo; i++)
+    {
+        incInfo = incInfo_array[i];
+        if (incInfo->type == INC_HASHJOIN)
+            numState += 2;
+        else if (incInfo->type == INC_AGGHASH)
+            numState += 1;
+        else if (incInfo->type == INC_MATERIAL)
+            numState += 1; 
+    }
+
+    int minCost = INT_MAX; 
+    int minCase; 
+    int totalCase = 1 << numState; 
+    int memoryCost = 0;
+
+    elog(NOTICE, "totalcase: %d, totalstate: %d", totalCase, numState);
+    for (int i = 0; i < totalCase; i++)
+    {
+        memoryCost = 0;
+        for (int j = 0, k = 0; j < numState; k++)
+        {
+            incInfo = incInfo_array[k];
+            if (incInfo->type == INC_HASHJOIN)
+            {
+                memoryCost += incInfo->memory_cost[LEFT_STATE];
+                memoryCost += incInfo->memory_cost[RIGHT_STATE];
+
+                if ((i & (1 << j)) != 0)
+                    incInfo->incState[LEFT_STATE] = STATE_KEEPMEM;
+                else
+                    incInfo->incState[LEFT_STATE] = STATE_DROP;
+
+                if ((i & (1 << (j+1))) != 0)
+                    incInfo->incState[RIGHT_STATE] = STATE_KEEPMEM;
+                else
+                    incInfo->incState[RIGHT_STATE] = STATE_DROP;
+                j += 2;
+            }
+            else if (incInfo->type == INC_AGGHASH || incInfo->type == INC_MATERIAL)
+            {
+                memoryCost += incInfo->memory_cost[LEFT_STATE];
+
+                if ((i & (1 << j)) != 0)
+                    incInfo->incState[LEFT_STATE] = STATE_KEEPMEM;
+                else
+                    incInfo->incState[LEFT_STATE] = STATE_DROP;
+
+                j++; 
+            }
+        }
+
+        //if (memoryCost > incMemory)
+        //    continue; 
+
+        int curCost = ExecBFCalCost(incInfo_array[numIncInfo - 1], PULL_DELTA);
+
+        if (curCost < minCost)
+        {
+            minCost = curCost;
+            minCase = i; 
+        }
+    }
+
+    for (int j = 0, k = 0; j < numState; k++)
+    {
+        incInfo = incInfo_array[k];
+        if (incInfo->type == INC_HASHJOIN)
+        {
+            if ((minCase & (1 << j)) != 0)
+                incInfo->incState[LEFT_STATE] = STATE_KEEPMEM;
+            else
+                incInfo->incState[LEFT_STATE] = STATE_DROP;
+
+            if ((minCase & (1 << (j+1))) != 0)
+                incInfo->incState[RIGHT_STATE] = STATE_KEEPMEM;
+            else
+                incInfo->incState[RIGHT_STATE] = STATE_DROP;
+            j += 2;
+        }
+        else if (incInfo->type == INC_AGGHASH || incInfo->type == INC_MATERIAL)
+        {
+            if ((minCase & (1 << j)) != 0)
+                incInfo->incState[LEFT_STATE] = STATE_KEEPMEM;
+            else
+                incInfo->incState[LEFT_STATE] = STATE_DROP;
+
+            j++; 
+        }
+    }
+
+}
+
+
+//static void 
+//ExecGreedyAssignState(IncInfo *incInfo, IncState state)
+//{
+//    int id = incInfo->id; 
+//    switch(incInfo->type)
+//    {
+//        case INC_HASHJOIN:
+//            incInfo->incState[RIGHT_STATE] = state;
+//            break;
+//
+//        case INC_MERGEJOIN:
+//            elog(ERROR, "not supported MergeJoin yet"); 
+//            break;
+//
+//        case INC_NESTLOOP:
+//            incInfo->incState[RIGHT_STATE] = STATE_DROP;
+//            break;
+//
+//        case INC_SEQSCAN:
+//        case INC_INDEXSCAN:
+//            return; 
+//            break; 
+//
+//        case INC_AGGSORT:
+//            incInfo->incState[LEFT_STATE] = STATE_DROP; 
+//            break; 
+//
+//        case INC_AGGHASH:
+//        case INC_MATERIAL:
+//        case INC_SORT:
+//            incInfo->incState[LEFT_STATE] = state; 
+//            break; 
+//
+//
+//        default:
+//            elog(ERROR, "GreedyAssignState unrecognized nodetype: %u", incInfo->type);
+//            break; 
+//            return; 
+//    }
+//}
+//

@@ -51,6 +51,7 @@ typedef enum DecisionMethod
 extern DPMeta *BuildDPMeta(int numIncInfo, int incMemory); 
 extern void ExecDPSolution(DPMeta *dpmeta, struct IncInfo **incInfoArray, int numIncInfo, int incMemory, bool isSlave); 
 extern void ExecDPAssignState (DPMeta *dpmeta, struct IncInfo **incInfoArray, int i, int j, enum PullAction parentAction); 
+extern void ExecBruteForce(struct IncInfo **incInfo_array, int numIncInfo, int incMemory);
 
 /*
  * prototypes for Greedy Algorithms 

@@ -16,7 +16,7 @@ set bd_prob to :v_prob;
 
 set enable_incremental to on;
 set iqp_query to 'q9';
-set gen_mem_info to on; 
+set gen_mem_info to off; 
 
 select
     nation,

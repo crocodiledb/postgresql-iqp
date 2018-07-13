@@ -52,7 +52,7 @@ int exist_mask[DEFAULT_MASK_SIZE] = {0x1, 0x2, 0x3};
 #define CHECK_EXIST_MASK(mask, i) \
     ((mask & 1 << i) != 0)
 
-int delta_count = 0;
+int delta_count = 1;
 tpch_delta_mode delta_mode = TPCH_UNIFORM; 
 
 static char *newstr()

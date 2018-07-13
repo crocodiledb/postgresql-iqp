@@ -1,6 +1,6 @@
 set max_parallel_workers_per_gather to 0;
 set work_mem to 1000000;
-set memory_budget to 1500000;
+set memory_budget to 0;
 set decision_method to dp;
 set tpch_updates to 'part,supplier,lineitem,orders,customer';
 
@@ -10,11 +10,11 @@ set enable_mergejoin to off;
 
 set geqo to off;
 
-set enable_incremental to on;
+set enable_incremental to off;
 set iqp_query to 'q8';
 set gen_mem_info to off; 
 
-select
+explain select
     nation,
     o_year,
     sum(i8_l_extendedprice * (1-i8_l_discount))

@@ -1,0 +1,9 @@
+2
+o
+1	l:orderkey	
+1	orderpriority:CHAR(15)
+
+l
+1	o:orderkey	
+1	shipmode:CHAR(10)	
+

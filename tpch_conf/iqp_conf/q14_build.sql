@@ -1,0 +1,17 @@
+DROP TABLE IF EXISTS I14_L CASCADE;
+DROP TABLE IF EXISTS I14_P CASCADE;
+
+CREATE TABLE I14_L (
+	I14_l_partkey		BIGINT,
+    	I14_l_linenumber 	INTEGER,
+	I14_l_extendedprice	DECIMAL,
+	I14_l_discount		DECIMAL
+);
+
+CREATE TABLE I14_P (
+	I14_p_partkey		BIGINT,
+	I14_p_type		VARCHAR(25)
+);
+
+
+

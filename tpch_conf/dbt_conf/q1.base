@@ -1,0 +1,5 @@
+1
+l
+0	
+6	quantity:decimal	extendedprice:decimal	discount:decimal	tax:decimal	returnflag:char(1)	linestatus:char(1)	
+

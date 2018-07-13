@@ -1,0 +1,10 @@
+2
+p
+1	l:partkey	
+1	type:VARCHAR(25)
+
+l
+1	p:partkey	
+2	extendedprice:DECIMAL	discount:DECIMAL	
+
+

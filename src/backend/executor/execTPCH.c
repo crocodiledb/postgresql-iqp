@@ -30,10 +30,10 @@ double bd_prob;
 
 #define LINEITEM_MAX_ROW (6000000 * SCALE_FACTOR)
 #define ORDERS_MAX_ROW   (6000000 * SCALE_FACTOR)
-#define CUSTOMER_MAX_ROW (150000  * SCALE_FACTOR)
 #define PARTSUPP_MAX_ROW (200000  * SCALE_FACTOR)
-#define SUPPLIER_MAX_ROW (10000   * SCALE_FACTOR)
 #define PART_MAX_ROW     (200000  * SCALE_FACTOR)
+#define CUSTOMER_MAX_ROW (150000  * SCALE_FACTOR)
+#define SUPPLIER_MAX_ROW (10000   * SCALE_FACTOR)
 
 #define MAX_DELTA_NUM 10
 #define MIN_DELTA_PERCENT 0.000999
@@ -52,7 +52,7 @@ int exist_mask[DEFAULT_MASK_SIZE] = {0x1, 0x2, 0x3};
 #define CHECK_EXIST_MASK(mask, i) \
     ((mask & 1 << i) != 0)
 
-int delta_count = 1;
+int delta_count = 0;
 tpch_delta_mode delta_mode = TPCH_UNIFORM; 
 
 static char *newstr()

@@ -357,6 +357,7 @@ ExecIncFinish(EState *estate, PlanState *planstate)
 
     if (estate->es_isSelect && !gen_mem_info)
     {
+        ExecCopyIncInfo(estate->es_incInfo, estate->es_incInfo_slave, estate->es_numIncInfo); 
         ExecCollectPerDeltaInfo(estate);
         ExecFinalizeStatInfo(estate); 
         pfree(estate->reader_ss); 

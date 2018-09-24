@@ -230,9 +230,10 @@ ExecDPSolution(DPMeta *dpmeta, IncInfo **incInfoArray, int numIncInfo, int incMe
 
                 case INC_MATERIAL:
                     //if (isSlave || incInfo->ps)
-                    incInfo->execDPNode = MaterialDP;
-                    //else
-                    //    incInfo->execDPNode = SimpleDropDP; 
+                    if (use_material)
+                        incInfo->execDPNode = MaterialDP;
+                    else
+                        incInfo->execDPNode = SimpleDropDP; 
                     break;  
 
                 case INC_HASHJOIN:

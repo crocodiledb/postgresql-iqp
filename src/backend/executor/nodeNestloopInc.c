@@ -427,6 +427,7 @@ ExecNestLoopInc(PlanState *pstate)
     TupleTableSlot * result_slot = ExecNestLoopIncReal(pstate); 
     if (!TupIsNull(result_slot)) 
     {
+        pstate->rows_emitted++; 
         return result_slot; 
     }
     else
@@ -486,6 +487,8 @@ ExecInitNestLoopInc(NestLoopState *node, int eflags)
     BuildOuterHashNode(hj_state, estate, eflags); 
 
     hj_state->hj_PullEncoding = EncodePullAction(PULL_BATCH);
+
+    node->js.ps.rows_emitted = 0;
 }
 
 

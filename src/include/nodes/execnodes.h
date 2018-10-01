@@ -945,6 +945,7 @@ typedef struct PlanState
     TupleTableSlot *ps_WorkingTupleSlot;   /* totem for dbt */
     PullAction chgAction;                  /* totem: used by Rescan */
     bool    isDelta;                       /* totem: is in delta processing */
+    double  rows_emitted;                  /* totem: number of rows emitted from this operator */
 } PlanState;
 
 /* ----------------

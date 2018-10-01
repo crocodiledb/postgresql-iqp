@@ -31,14 +31,15 @@ typedef struct TPCH_Delta
 
 typedef struct TPCH_Update 
 {
-    int  numUpdates;
-    int  *table_oid; 
-    char **update_tables;
-    char **update_commands;
-    char **delete_commands;
-    int numdelta;
-    TPCH_Delta *tpch_delta; 
-    int *exist_mask;  
+    int     numUpdates;
+    int     *table_oid; 
+    double  *table_amp_factor;
+    char    **update_tables;
+    char    **update_commands;
+    char    **delete_commands;
+    int     numdelta;
+    TPCH_Delta *tpch_delta; /* indexed by tables and then by number of deltas*/ 
+    int *exist_mask;
 } TPCH_Update; 
 
 extern TPCH_Update *ExecInitTPCHUpdate(); 
@@ -47,7 +48,7 @@ extern TPCH_Update *BuildTPCHUpdate(char *tablenames);
 
 extern int PopulateUpdate(TPCH_Update *update, int numdelta); 
 
-extern bool CheckTPCHUpdate(TPCH_Update *update, int oid, int delta_index);
+extern int CheckTPCHUpdate(TPCH_Update *update, int oid, int delta_index);
 
 extern void GenTPCHUpdate(TPCH_Update *update, int delta_index); 
 

@@ -633,6 +633,7 @@ ExecHashJoinInc(PlanState *pstate)
     TupleTableSlot * result_slot = ExecHashJoinReal(pstate); 
     if (!TupIsNull(result_slot)) 
     {
+        pstate->rows_emitted += 1;
         return result_slot; 
     }
     else
@@ -662,7 +663,9 @@ ExecInitHashJoinInc(HashJoinState *node, EState *estate, int eflags)
     node->hj_buildtime = 0;
     node->hj_innertime = 0;  
     node->hj_outertime = 0;  
-    node->hj_scantime = 0;  
+    node->hj_scantime = 0;
+
+    node->js.ps.rows_emitted = 0; 
 
     BuildOuterHashNode(node, estate, eflags); 
 }

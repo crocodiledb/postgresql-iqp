@@ -37,6 +37,7 @@
 
 #include <math.h>
 #include <string.h>
+#include <float.h>
 
 /* For creating and destroying query online */
 #include "parser/parser.h"
@@ -76,7 +77,7 @@ static QueryDesc * ExecIQPBuildPS(EState *estate, char *sqlstr);
 static iqp_base * ExecBuildIQPBase(EState *estate, char *query_conf);
 static void ExecSwapinIQPBase(EState *estate, PlanState *root, iqp_base *base);
 static void ExecSwapoutIQPBase(iqp_base *base);
-static Cost PropagateDeltaCost(Plan *parent);
+static Cost PropagateDiffCost(Plan *parent);
 
 /* Functions for managing IncInfo */
 static void ExecInitIncInfo (EState *estate, PlanState *ps); 
@@ -86,20 +87,27 @@ static IncInfo * ExecInitIncInfoHelper(PlanState *ps, IncInfo *parent, int *coun
 static IncInfo *ExecReplicateIncInfoTree(IncInfo *incInfo, IncInfo *parent);
 static void ExecCopyIncInfo(IncInfo **incInfo_array, IncInfo **incInfo_array_slave, int numIncInfo); 
 static void ExecFinalizeStatInfo(EState *estate); 
-static void ExecAssignStateExist(IncInfo **incInfo_array, IncInfo **incInfo_array_slave, int numIncInfo); 
+static void ExecAssignStateExist(IncInfo **incInfo_array, IncInfo **incInfo_array_slave, int numIncInfo);
 
 /* Functions for estimate updates and propagate updates */
-static void ExecEstimateUpdate(EState *estate, bool slave); 
-static bool ExecIncPropUpdate(IncInfo *incInfo); 
+static void ExecInitUpdate(IncInfo **incInfo_array, int numIncInfo, RowAction action);
+/* Assign delta_rows*/
+static void ExecEstimateUpdate(EState *estate, bool slave);
+/* Propagate delta_rows to IncInfo tree*/
+static bool ExecIncPropUpdate(IncInfo *incInfo, RowAction action);
+/* Ingest upcoming_rows into existing_rows and move delta_rows to upcoming_rows */
+static void ExecIngestUpdate(IncInfo **incInfo_array, int numIncInfo, RowAction action);
 
 /* Generating, Waiting, and Collecting update */
 static void ExecGenUpdate(EState *estate, int deltaIndex);
 static void ExecWaitUpdate(EState *estate); 
-static void ExecCollectUpdate(EState *estate); 
+static void ExecCollectUpdate(EState *estate);
+static bool ExecPropRealUpdate(IncInfo *incInfo); 
 
 /* Functions for deciding intermediate state to be discarded or not */
+static void ExecGetMemInfo(IncInfo **incInfoArray, int numIncInfo); 
 static void ExecReadMemInfo(IncInfo **incInfoArray, int numIncInfo, char *mem_info); 
-static void ExecCollectCostInfo(IncInfo *incInfo, bool compute, bool memory); 
+static void ExecCollectCostInfo(IncInfo *incInfo, CostAction action);
 static void ExecDecideState(DPMeta *dpmeta, IncInfo **incInfoArray, int numIncInfo, int incMemory, bool isSlave); 
 
 /* Functions for changing plan*/
@@ -149,7 +157,7 @@ ExecIncStart(EState *estate, PlanState *ps)
         ExecSwapinIQPBase(estate, ps, base);
         estate->base = base; 
 
-        (void) PropagateDeltaCost(ps->plan);
+        (void) PropagateDiffCost(ps->plan);
     }
 
     if (estate->es_isSelect && !gen_mem_info)
@@ -226,16 +234,17 @@ ExecIncStart(EState *estate, PlanState *ps)
         struct timeval start, end;  
         gettimeofday(&start , NULL);
 
+        ExecInitUpdate(estate->es_incInfo_slave, estate->es_numIncInfo, ROW_CPU);
         ExecEstimateUpdate(estate, true); 
 
-        (void) ExecIncPropUpdate(estate->es_incInfo_slave[estate->es_numIncInfo - 1]); 
+        (void) ExecIncPropUpdate(estate->es_incInfo_slave[estate->es_numIncInfo - 1], ROW_CPU); 
 
         char memInfo[50];
         memset(memInfo, 0, sizeof(memInfo));
         sprintf(memInfo, "%s.mem", iqp_query);
         ExecReadMemInfo(estate->es_incInfo_slave, estate->es_numIncInfo, memInfo);
 
-        ExecCollectCostInfo(estate->es_incInfo_slave[estate->es_numIncInfo - 1], true, false); 
+        ExecCollectCostInfo(estate->es_incInfo_slave[estate->es_numIncInfo - 1], COST_CPU_INIT); 
 
         ExecDecideState(estate->dpmeta, estate->es_incInfo_slave, estate->es_numIncInfo, estate->es_incMemory, true); 
             
@@ -314,15 +323,26 @@ ExecIncRun(EState *estate, PlanState *planstate)
         if (estate->deltaIndex < estate->numDelta)
         {
             struct timeval start, end;  
-            gettimeofday(&start , NULL); 
+            gettimeofday(&start , NULL);
 
             ExecAssignStateExist(estate->es_incInfo, estate->es_incInfo_slave, estate->es_numIncInfo); 
 
+            if (estate->deltaIndex == 1)
+            {
+                ExecInitUpdate(estate->es_incInfo_slave, estate->es_numIncInfo, ROW_MEM);
+                ExecIncPropUpdate(estate->es_incInfo_slave[estate->es_numIncInfo - 1], ROW_MEM); 
+            }
+
+            ExecIngestUpdate(estate->es_incInfo_slave, estate->es_numIncInfo, ROW_CPU);
+            ExecIngestUpdate(estate->es_incInfo_slave, estate->es_numIncInfo, ROW_MEM); 
+
             ExecEstimateUpdate(estate, true);
 
-            (void) ExecIncPropUpdate(estate->es_incInfo_slave[estate->es_numIncInfo - 1]); 
+            (void) ExecIncPropUpdate(estate->es_incInfo_slave[estate->es_numIncInfo - 1], ROW_CPU); 
+            (void) ExecIncPropUpdate(estate->es_incInfo_slave[estate->es_numIncInfo - 1], ROW_MEM); 
 
-            ExecCollectCostInfo(estate->es_incInfo_slave[estate->es_numIncInfo - 1], true, true); 
+            ExecCollectCostInfo(estate->es_incInfo_slave[estate->es_numIncInfo - 1], COST_CPU_UPDATE);
+            ExecCollectCostInfo(estate->es_incInfo_slave[estate->es_numIncInfo - 1], COST_MEM_UPDATE);
 
             ExecDecideState(estate->dpmeta, estate->es_incInfo_slave, estate->es_numIncInfo, estate->es_incMemory, true); 
 
@@ -336,7 +356,7 @@ ExecIncRun(EState *estate, PlanState *planstate)
         ExecGenUpdate(estate, estate->deltaIndex - 1);
         ExecWaitUpdate(estate); 
         ExecCollectUpdate(estate); 
-        (void) ExecIncPropUpdate(estate->es_incInfo[estate->es_numIncInfo - 1]); 
+        (void) ExecPropRealUpdate(estate->es_incInfo[estate->es_numIncInfo - 1]); 
 
         /* step 6. generate pull actions */
         ExecGenPullAction(estate->es_incInfo[estate->es_numIncInfo - 1], PULL_DELTA); 
@@ -368,7 +388,7 @@ ExecIncFinish(EState *estate, PlanState *planstate)
         if (estate->es_memStatFile != NULL)
         {
             FILE *memStatFile = estate->es_memStatFile;
-            ExecCollectCostInfo(estate->es_incInfo[estate->es_numIncInfo - 1], true, true); 
+            ExecGetMemInfo(estate->es_incInfo, estate->es_numIncInfo);
             for (int i = 0; i < estate->es_numIncInfo; i++)
             {
                 IncInfo *incInfo = estate->es_incInfo[i];
@@ -400,20 +420,26 @@ ExecIncFinish(EState *estate, PlanState *planstate)
  * Functions for managing IncInfo 
  * */
 
+/*
+ * Build IncInfo tree and an array to store the IncInfo tree in an layer-oriented order
+ * */
 static void 
 ExecInitIncInfo(EState *estate, PlanState *ps) 
 {
     int count = 0; 
     int leafCount = 0; 
 
-    ExecInitIncInfoHelper(ps, NULL, &count, &leafCount);
+    /* Build IncInfo tree */
+    ExecInitIncInfoHelper(ps, NULL, &count, &leafCount); 
     estate->es_numLeaf = leafCount; 
 
+    /* Store the IncInfo tree in an layer-oriented order */
     estate->es_incInfo = (IncInfo **) palloc(sizeof(IncInfo *) * count); 
     ExecAssignIncInfo(estate->es_incInfo, count, ps->ps_IncInfo); 
     estate->es_numIncInfo = count; 
     estate->es_totalMemCost  = 0;
 
+    /* Do a replica */
     IncInfo *root_replica = ExecReplicateIncInfoTree(ps->ps_IncInfo, NULL); 
     estate->es_incInfo_slave = (IncInfo **) palloc(sizeof(IncInfo *) * count);
     ExecAssignIncInfo(estate->es_incInfo_slave, count, root_replica); 
@@ -447,11 +473,23 @@ BuildIncInfo()
         incInfo->stateExist[i] = true; 
     }
 
-    incInfo->leftAction = PULL_BATCH;
+    incInfo->leftAction  = PULL_BATCH;
     incInfo->rightAction = PULL_BATCH; 
     
-    incInfo->leftUpdate = false;
+    incInfo->leftUpdate  = false;
     incInfo->rightUpdate = false;
+
+    incInfo->existing_rows = 0;
+    incInfo->upcoming_rows = 0;
+    incInfo->delta_rows    = 0;
+
+    incInfo->base_existing_rows = 0;
+    incInfo->base_upcoming_rows = 0;
+    incInfo->base_delta_rows    = 0;
+
+    incInfo->mem_existing_rows = 0;
+    incInfo->mem_upcoming_rows = 0; 
+    incInfo->mem_delta_rows    = 0;
 }
 
 static void 
@@ -704,41 +742,134 @@ static void ExecAssignStateExist(IncInfo **incInfo_array, IncInfo **incInfo_arra
 }
 
 /* Functions for estimate updates and propagate updates */
+static void ExecInitUpdate(IncInfo **incInfo_array, int numIncInfo, RowAction action)
+{
+    IncInfo     *incInfo;
+    PlanState   *ps;
+    for (int i = 0; i < numIncInfo; i++)
+    {
+        incInfo = incInfo_array[i];
+        if (incInfo->ps != NULL)
+            ps = incInfo->ps;
+        else
+            ps = incInfo->lefttree->ps; 
+
+        if (action == ROW_CPU)
+        {
+            incInfo->upcoming_rows = ps->plan->plan_rows;
+
+            if (incInfo->lefttree == NULL && incInfo->righttree == NULL)
+            {
+                ScanState *ss = (ScanState *) incInfo->ps;
+                incInfo->base_upcoming_rows = (double)ss->ss_currentRelation->rd_rel->reltuples;
+            }
+        }
+        else
+        {
+            incInfo->mem_upcoming_rows = ps->rows_emitted; 
+        }
+    }
+}
+
 static void 
 ExecEstimateUpdate(EState *estate, bool slave)
 {
-    TPCH_Update *update = estate->tpch_update; 
+    TPCH_Update *update = estate->tpch_update;
     ScanState **reader_ss_array = estate->reader_ss; 
     ScanState *ss; 
-    bool hasUpdate;
+    int update_rows;
 
     for (int i = 0; i < estate->es_numLeaf; i++)
     {
         ss = reader_ss_array[i]; 
 
         if (use_default_tpch && know_dist_only)
-            hasUpdate = CheckTPCHDefaultUpdate(GEN_TQ_KEY(ss->ss_currentRelation)); 
+        {
+            update_rows = CheckTPCHUpdate(update, GEN_TQ_KEY(ss->ss_currentRelation), estate->deltaIndex);
+        }
         else
-            hasUpdate = CheckTPCHUpdate(update, GEN_TQ_KEY(ss->ss_currentRelation), estate->deltaIndex);
+        {
+            update_rows = CheckTPCHUpdate(update, GEN_TQ_KEY(ss->ss_currentRelation), estate->deltaIndex);
+        }
         if (slave)
-            ss->ps.ps_IncInfo_slave->leftUpdate = hasUpdate;
+        {
+            ss->ps.ps_IncInfo_slave->leftUpdate = (update_rows != 0);
+            ss->ps.ps_IncInfo_slave->base_delta_rows = update_rows; 
+        }
         else
-            ss->ps.ps_IncInfo->leftUpdate = hasUpdate; 
+        {
+            ss->ps.ps_IncInfo->leftUpdate = (update_rows != 0);
+            ss->ps.ps_IncInfo->base_delta_rows = update_rows; 
+        }
     }
 }
 
 static bool 
-ExecIncPropUpdate(IncInfo *incInfo)
+ExecIncPropUpdate(IncInfo *incInfo, RowAction action)
 {
+    double selectivity;
     if (incInfo->lefttree == NULL && incInfo->righttree == NULL) 
     {
-        return incInfo->leftUpdate;  
+        /* Estimate cardinality of base tables */
+        double base_rows = incInfo->base_existing_rows + incInfo->base_upcoming_rows;
+        if (action == ROW_CPU)
+        {
+            double emit_rows = incInfo->existing_rows + incInfo->upcoming_rows; 
+            selectivity = emit_rows/base_rows;
+            incInfo->delta_rows = ceil(incInfo->base_delta_rows * selectivity);
+
+            return incInfo->leftUpdate;
+        }
+        else /* ROW_MEM */
+        {
+            double emit_rows = incInfo->mem_existing_rows + incInfo->upcoming_rows; 
+            selectivity  = emit_rows/base_rows; 
+            incInfo->mem_delta_rows = ceil(incInfo->base_delta_rows * selectivity); 
+
+            return false; 
+        }
     }
     else if (incInfo->righttree == NULL) 
     {
-        incInfo->rightUpdate = false;
-        incInfo->leftUpdate = ExecIncPropUpdate(incInfo->lefttree); 
-        return incInfo->leftUpdate | incInfo->rightUpdate; 
+        if (action == ROW_CPU)
+        {
+            incInfo->rightUpdate = false;
+            incInfo->leftUpdate = ExecIncPropUpdate(incInfo->lefttree, action); 
+            /* Estimate cardinality for delta processsing */
+            if (incInfo->type == INC_SORT || incInfo->type == INC_MATERIAL)
+            {
+                incInfo->delta_rows = incInfo->lefttree->delta_rows;
+            }
+            else if (incInfo->type == INC_AGGHASH || incInfo->type == INC_AGGSORT)
+            {
+                incInfo->delta_rows = 0 ; 
+            }
+            else
+            {
+                elog(ERROR, "No Cardinality Estimation for %d", incInfo->type); 
+            }
+
+            return incInfo->leftUpdate | incInfo->rightUpdate; 
+        }
+        else /* ROW_MEM */
+        {
+            ExecIncPropUpdate(incInfo->lefttree, action);
+            /* Estimate cardinality for delta processsing */
+            if (incInfo->type == INC_SORT || incInfo->type == INC_MATERIAL)
+            {
+                incInfo->mem_delta_rows = incInfo->lefttree->mem_delta_rows;
+            }
+            else if (incInfo->type == INC_AGGHASH || incInfo->type == INC_AGGSORT)
+            {
+                incInfo->mem_delta_rows = 0;  
+            }
+            else
+            {
+                elog(ERROR, "No Cardinality Estimation for %d", incInfo->type); 
+            }
+
+            return false;  
+        }
     }
     else if (incInfo->lefttree == NULL) /* This case is impossible; outer plan is not NULL except for leaf nodes */
     {
@@ -747,11 +878,80 @@ ExecIncPropUpdate(IncInfo *incInfo)
     }
     else
     {
-        incInfo->leftUpdate = ExecIncPropUpdate(incInfo->lefttree); 
-        incInfo->rightUpdate = ExecIncPropUpdate(incInfo->righttree); 
-        return incInfo->leftUpdate | incInfo->rightUpdate; 
+        if (action == ROW_CPU)
+        {
+            incInfo->leftUpdate = ExecIncPropUpdate(incInfo->lefttree, action); 
+            incInfo->rightUpdate = ExecIncPropUpdate(incInfo->righttree, action); 
+
+            /* Estimate join cardinality for delta */
+            double emit_rows = incInfo->existing_rows + incInfo->upcoming_rows; 
+            double left_emit_rows = incInfo->lefttree->existing_rows + incInfo->lefttree->upcoming_rows; 
+            double right_emit_rows = incInfo->righttree->existing_rows + incInfo->righttree->upcoming_rows; 
+
+            double delta_rows = 0;
+            double left_delta_rows = (double)incInfo->lefttree->delta_rows;
+            double right_delta_rows = (double)incInfo->righttree->delta_rows;
+            delta_rows += (emit_rows / left_emit_rows) * left_delta_rows; 
+
+            delta_rows += (emit_rows / right_emit_rows) * right_delta_rows;
+            delta_rows += (emit_rows / (left_emit_rows * right_emit_rows)) * (left_delta_rows * right_delta_rows); 
+
+            incInfo->delta_rows = ceil(delta_rows);
+
+            return incInfo->leftUpdate | incInfo->rightUpdate; 
+        }
+        else /* ROW_MEM */
+        {
+            ExecIncPropUpdate(incInfo->lefttree, action); 
+            ExecIncPropUpdate(incInfo->righttree, action); 
+
+            /* Estimate join cardinality for delta */
+            double emit_rows = incInfo->mem_existing_rows + incInfo->mem_upcoming_rows;
+            double left_emit_rows = incInfo->lefttree->mem_existing_rows + incInfo->lefttree->mem_upcoming_rows; 
+            double right_emit_rows = incInfo->righttree->mem_existing_rows + incInfo->righttree->mem_upcoming_rows; 
+
+            double delta_rows = 0;
+            double left_delta_rows = (double)incInfo->lefttree->mem_delta_rows;
+            double right_delta_rows = (double)incInfo->righttree->mem_delta_rows;
+            delta_rows += (emit_rows / left_emit_rows) * left_delta_rows; 
+
+            delta_rows += (emit_rows / right_emit_rows) * right_delta_rows;
+            delta_rows += (emit_rows / (left_emit_rows * right_emit_rows)) * (left_delta_rows * right_delta_rows); 
+
+            incInfo->mem_delta_rows = ceil(delta_rows);
+
+            return false; 
+        }
     }
 }
+
+static void  
+ExecIngestUpdate(IncInfo **incInfoArray, int numIncInfo, RowAction action)
+{
+    IncInfo *incInfo;
+    for (int i = 0; i < numIncInfo; i++)
+    {
+        incInfo = incInfoArray[i];
+
+        if (action == ROW_CPU)
+        {
+            incInfo->existing_rows += incInfo->upcoming_rows; 
+            incInfo->upcoming_rows =  incInfo->delta_rows;
+            incInfo->delta_rows    =  0; 
+
+            incInfo->base_existing_rows += incInfo->base_upcoming_rows;
+            incInfo->base_upcoming_rows =  incInfo->base_delta_rows;
+            incInfo->base_delta_rows    =  0;
+        }
+        else
+        {
+            incInfo->mem_existing_rows += incInfo->mem_upcoming_rows; 
+            incInfo->mem_upcoming_rows =  incInfo->mem_delta_rows; 
+            incInfo->mem_delta_rows    =  0;
+        }
+    }
+}
+
 
 /* Generating, Waiting, and Collecting update */
 static void ExecGenUpdate(EState *estate, int deltaIndex)
@@ -807,6 +1007,78 @@ static void ExecCollectUpdate(EState *estate)
 }
 
 
+static bool ExecPropRealUpdate(IncInfo *incInfo)
+{
+    if (incInfo->lefttree == NULL && incInfo->righttree == NULL) 
+    {
+        return incInfo->leftUpdate;  
+    }
+    else if (incInfo->righttree == NULL) 
+    {
+        incInfo->rightUpdate = false;
+        incInfo->leftUpdate = ExecPropRealUpdate(incInfo->lefttree); 
+        return incInfo->leftUpdate | incInfo->rightUpdate; 
+    }
+    else if (incInfo->lefttree == NULL) /* This case is impossible; outer plan is not NULL except for leaf nodes */
+    {
+        Assert(false);
+        return false;
+    }
+    else
+    {
+        incInfo->leftUpdate = ExecPropRealUpdate(incInfo->lefttree); 
+        incInfo->rightUpdate = ExecPropRealUpdate(incInfo->righttree); 
+        return incInfo->leftUpdate | incInfo->rightUpdate; 
+    }
+}
+
+static void ExecGetMemInfo(IncInfo **incInfoArray, int numIncInfo)
+{
+    IncInfo     *incInfo;
+    PlanState   *ps;
+    bool        estimate;
+    int         tmpMem; 
+    for (int i = 0; i < numIncInfo; i++)
+    {
+        incInfo = incInfoArray[i];
+        if (incInfo->type == INC_HASHJOIN)
+        {
+            tmpMem = ExecHashJoinMemoryCost((HashJoinState *) ps, &estimate, false);
+            tmpMem = (tmpMem + 1023)/1024;
+            incInfo->memory_cost[LEFT_STATE] = tmpMem; 
+
+            ExecHashJoinMemoryCost((HashJoinState *) ps, &estimate, true);
+            tmpMem = (tmpMem + 1023)/1024; 
+            incInfo->memory_cost[RIGHT_STATE] = tmpMem; 
+        }
+        else if (incInfo->type == INC_NESTLOOP)
+        {
+            tmpMem = ExecNestLoopMemoryCost((NestLoopState *) ps, &estimate);
+            tmpMem = (tmpMem + 1023)/1024;
+            incInfo->memory_cost[LEFT_STATE] = tmpMem;
+        }
+        else if (incInfo->type == INC_MATERIAL)
+        {
+            tmpMem = ExecMaterialIncMemoryCost((MaterialIncState *) ps);
+            tmpMem = (tmpMem + 1023)/1024;
+            incInfo->memory_cost[LEFT_STATE] = tmpMem;
+        }
+        else if (incInfo->type == INC_AGGHASH)
+        {
+            tmpMem = ExecAggMemoryCost((AggState *) ps, &estimate);
+            tmpMem = (tmpMem + 1023)/1024;
+            incInfo->memory_cost[LEFT_STATE] = tmpMem; 
+        }
+        else if (incInfo->type == INC_SORT)
+        {
+            tmpMem = ExecSortMemoryCost((SortState *) ps, &estimate);
+            tmpMem = (tmpMem + 1023)/1024;
+            incInfo->memory_cost[LEFT_STATE] = tmpMem; 
+        }
+    }
+}
+
+
 static void ExecReadMemInfo(IncInfo **incInfoArray, int numIncInfo, char *mem_info)
 {
     FILE *mem_file; 
@@ -838,10 +1110,8 @@ static void ExecReadMemInfo(IncInfo **incInfoArray, int numIncInfo, char *mem_in
     fclose(mem_file); 
 }
 
-
-/* Functions for deciding intermediate state to be discarded or not */
 static void
-ExecCollectCostInfo(IncInfo *incInfo, bool compute, bool memory)
+ExecCollectCostInfo(IncInfo *incInfo, CostAction action)
 {
     PlanState *ps = incInfo->ps; 
     Plan *plan = NULL; 
@@ -862,55 +1132,81 @@ ExecCollectCostInfo(IncInfo *incInfo, bool compute, bool memory)
         case INC_HASHJOIN:
             innerPlan = innerPlan(plan);
             outerPlan = outerPlan(plan);
-            if (compute) 
+
+            HashJoin *hj = (HashJoin *)plan; 
+            double num_hashclauses = (double)length(hj->hashclauses); 
+
+            if (action == COST_CPU_INIT)
             {
+                /* Init prepare_cost and compute_cost */
                 incInfo->prepare_cost[RIGHT_STATE] = (int)(innerPlan->total_cost - outerPlan(innerPlan)->total_cost);
                 incInfo->compute_cost = (int)(plan->total_cost - innerPlan->total_cost - outerPlan->total_cost);
 
-                HashJoin *hj = (HashJoin *)plan; 
-                double num_hashclauses = (double)length(hj->hashclauses); 
-                double inner_delta = innerPlan->plan_rows * 0.01;
-                double outer_delta = outerPlan->plan_rows * 0.01; 
-                //incInfo->keep_cost[LEFT_STATE] = (DEFAULT_CPU_OPERATOR_COST * num_hashclauses + DEFAULT_CPU_TUPLE_COST) \
-                //        * (outerPlan->plan_rows);
-                if (incInfo->incState[LEFT_STATE] != STATE_DROP)
-                    incInfo->keep_cost[LEFT_STATE] = 0; 
-                else
-                    incInfo->keep_cost[LEFT_STATE] = 0; 
+                /* Compute keep_cost */
+                incInfo->keep_cost[LEFT_STATE] = (DEFAULT_CPU_OPERATOR_COST * num_hashclauses + DEFAULT_CPU_TUPLE_COST) \
+                        * (incInfo->lefttree->existing_rows + incInfo->lefttree->upcoming_rows); 
+            }
 
+            if (action == COST_CPU_UPDATE)
+            {
+                /* Update prepare_cost and compute_cost */
+                double ratio = incInfo->righttree->upcoming_rows / incInfo->righttree->existing_rows;
+                double delta_cost = (double)incInfo->prepare_cost[RIGHT_STATE] * ratio;
+                incInfo->prepare_cost[RIGHT_STATE] += (int)delta_cost; 
+
+                ratio = incInfo->lefttree->upcoming_rows / incInfo->lefttree->existing_rows; 
+                delta_cost = (double)incInfo->compute_cost * ratio;
+                incInfo->compute_cost += (int)delta_cost; 
+
+                /* Update keep_cost */
+                if (incInfo->incState[LEFT_STATE] == STATE_DROP)
+                {
+                    incInfo->keep_cost[LEFT_STATE] = (DEFAULT_CPU_OPERATOR_COST * num_hashclauses + DEFAULT_CPU_TUPLE_COST) \
+                            * (incInfo->lefttree->existing_rows + incInfo->lefttree->upcoming_rows); 
+                }
+                else if (incInfo->incState[LEFT_STATE] == STATE_KEEPMEM)
+                {
+                    incInfo->keep_cost[LEFT_STATE] = (DEFAULT_CPU_OPERATOR_COST * num_hashclauses + DEFAULT_CPU_TUPLE_COST) \
+                            * incInfo->lefttree->upcoming_rows; 
+                }
+            }
+
+            /* Compute delta_cost */
+            if (action == COST_CPU_INIT || action == COST_CPU_UPDATE)
+            {
+                double inner_delta = (double)(incInfo->righttree->delta_rows);
+                double outer_delta = (double)(incInfo->lefttree->delta_rows); 
+                double outer_rows = (double)(incInfo->lefttree->existing_rows + incInfo->lefttree->upcoming_rows); 
                 if (incInfo->rightUpdate && !incInfo->leftUpdate)
                 {
-                    incInfo->delta_cost[LEFT_STATE] = ceil(DEFAULT_CPU_OPERATOR_COST * num_hashclauses * inner_delta); 
-                    incInfo->delta_cost[RIGHT_STATE] = ceil(DEFAULT_CPU_OPERATOR_COST * num_hashclauses * outerPlan->plan_rows); 
+                    incInfo->delta_cost[LEFT_STATE] = (int)ceil(DEFAULT_CPU_OPERATOR_COST * num_hashclauses * inner_delta); 
+                    incInfo->delta_cost[RIGHT_STATE] = (int)ceil(DEFAULT_CPU_OPERATOR_COST * num_hashclauses * outer_rows); 
                 }
                 else if (incInfo->leftUpdate && !incInfo->rightUpdate)
                 {
-                    incInfo->delta_cost[RIGHT_STATE] = ceil(DEFAULT_CPU_OPERATOR_COST * num_hashclauses * outer_delta);
+                    incInfo->delta_cost[LEFT_STATE] = DBL_MAX; 
+                    incInfo->delta_cost[RIGHT_STATE] = (int)ceil(DEFAULT_CPU_OPERATOR_COST * num_hashclauses * outer_delta);
                 }
                 else if (incInfo->leftUpdate && incInfo->rightUpdate)
                 {
-                    incInfo->delta_cost[LEFT_STATE]  = ceil(DEFAULT_CPU_OPERATOR_COST * num_hashclauses * (inner_delta + outer_delta));
-                    incInfo->delta_cost[RIGHT_STATE] = ceil(DEFAULT_CPU_OPERATOR_COST * num_hashclauses * (outer_delta + outerPlan->plan_rows));
+                    incInfo->delta_cost[LEFT_STATE]  = (int)ceil(DEFAULT_CPU_OPERATOR_COST * num_hashclauses * (inner_delta + outer_delta));
+                    incInfo->delta_cost[RIGHT_STATE] = (int)ceil(DEFAULT_CPU_OPERATOR_COST * num_hashclauses * (outer_delta + outer_rows));
                 }
             }
-            if (memory)
-            {
-                if (!incInfo->mem_computed[RIGHT_STATE]) 
-                {
-                    incInfo->memory_cost[RIGHT_STATE] = ExecHashJoinMemoryCost((HashJoinState *) ps, &estimate, true);
-                    incInfo->mem_computed[RIGHT_STATE] = !estimate;
-                    incInfo->memory_cost[RIGHT_STATE] = (incInfo->memory_cost[RIGHT_STATE] + 1023) / 1024; 
-                }
 
-                if (!incInfo->mem_computed[LEFT_STATE]) 
-                {
-                    incInfo->memory_cost[LEFT_STATE] = ExecHashJoinMemoryCost((HashJoinState *) ps, &estimate, false);
-                    incInfo->mem_computed[LEFT_STATE] = !estimate; 
-                    incInfo->memory_cost[LEFT_STATE] = (incInfo->memory_cost[LEFT_STATE] + 1023) / 1024; 
-                }
+            if (action == COST_MEM_UPDATE)
+            {
+                double ratio = incInfo->righttree->mem_upcoming_rows/incInfo->righttree->mem_existing_rows;
+                double delta_mem = ratio * (double)incInfo->memory_cost[RIGHT_STATE];
+                incInfo->memory_cost[RIGHT_STATE] += (int)delta_mem; 
+
+                ratio = incInfo->lefttree->mem_upcoming_rows/incInfo->lefttree->mem_existing_rows;
+                delta_mem = ratio * (double)incInfo->memory_cost[LEFT_STATE];
+                incInfo->memory_cost[LEFT_STATE] += (int)delta_mem; 
             }
-            ExecCollectCostInfo(incInfo->lefttree, compute, memory); 
-            ExecCollectCostInfo(incInfo->righttree, compute, memory); 
+
+            ExecCollectCostInfo(incInfo->lefttree, action); 
+            ExecCollectCostInfo(incInfo->righttree, action); 
             break;
 
         case INC_MERGEJOIN:
@@ -920,138 +1216,243 @@ ExecCollectCostInfo(IncInfo *incInfo, bool compute, bool memory)
         case INC_NESTLOOP:
             innerPlan = innerPlan(plan);
             outerPlan = outerPlan(plan);
-            if (compute) 
+
+            if (action == COST_CPU_INIT)
             {
-                incInfo->prepare_cost[RIGHT_STATE] = (int)(plan->startup_cost - innerPlan->total_cost); 
+                /* Compute prepare_cost and compute_cost */
+                incInfo->prepare_cost[RIGHT_STATE] = (int)(plan->startup_cost - innerPlan->total_cost);
                 incInfo->compute_cost = (int)(plan->total_cost- plan->startup_cost);
-                NestLoop *nl = (NestLoop *)plan; 
-                double num_hashclauses = (double)length(nl->join.joinqual); 
-                double inner_delta = innerPlan->plan_rows * 0.01;
-                double outer_delta = outerPlan->plan_rows * 0.01; 
-                //incInfo->keep_cost[LEFT_STATE] = (DEFAULT_CPU_OPERATOR_COST * num_hashclauses + DEFAULT_CPU_TUPLE_COST) \
-                //        * (outerPlan->plan_rows);
-                incInfo->keep_cost[LEFT_STATE] = 0; 
+
+                /* Compute keep_cost [TODO:need to double check here] */
+                incInfo->keep_cost[LEFT_STATE] = (DEFAULT_CPU_OPERATOR_COST * num_hashclauses + DEFAULT_CPU_TUPLE_COST) \
+                        * (outerPlan->plan_rows);
+            }
+
+            if (action == COST_CPU_UPDATE)
+            {
+                /* We do not need to update prepare_cost here 
+                 * Just update compute_cost */
+                double ratio = incInfo->lefttree->upcoming_rows / incInfo->lefttree->existing_rows; 
+                double delta_cost = (double)incInfo->compute_cost * ratio;
+                incInfo->compute_cost += (int)delta_cost; 
+
+                /* Update keep_cost */
+                if (incInfo->incState[LEFT_STATE] == STATE_DROP)
+                {
+                    incInfo->keep_cost[LEFT_STATE] = (DEFAULT_CPU_OPERATOR_COST * num_hashclauses + DEFAULT_CPU_TUPLE_COST) \
+                            * (incInfo->lefttree->existing_rows + incInfo->lefttree->upcoming_rows); 
+                }
+                else if (incInfo->incState[LEFT_STATE] == STATE_KEEPMEM)
+                {
+                    incInfo->keep_cost[LEFT_STATE] = (DEFAULT_CPU_OPERATOR_COST * num_hashclauses + DEFAULT_CPU_TUPLE_COST) \
+                            * incInfo->lefttree->upcoming_rows; 
+                }
+            }
+
+            /* Compute delta_cost; [TODO:not consider the cost of building hash tables for the right subtree delta] 
+             * */
+            if (action == COST_CPU_INIT || action == COST_CPU_UPDATE)
+            {
+                NestLoopState *nl = (NestLoopState *)ps;
+                HashJoin *hj = (HashJoin *)(nl->nl_hj->js.ps.plan); 
+                double num_hashclauses = (double)length(hj->hashclauses); 
+                double inner_delta = (double)(incInfo->righttree->delta_rows);
+                double outer_delta = (double)(incInfo->lefttree->delta_rows); 
+                double outer_rows = (double)(incInfo->lefttree->existing_rows + incInfo->lefttree->upcoming_rows); 
+
+                double ratio = incInfo->lefttree->delta_rows / (incInfo->lefttree->existing_rows + incInfo->lefttree->upcoming_rows);
+                double org_outer_delta_cost = (double)incInfo->compute_cost * ratio;
+
                 if (incInfo->rightUpdate && !incInfo->leftUpdate)
                 {
-                    incInfo->delta_cost[LEFT_STATE] = ceil(DEFAULT_CPU_OPERATOR_COST * num_hashclauses * inner_delta); 
-                    incInfo->delta_cost[RIGHT_STATE] = ceil(DEFAULT_CPU_OPERATOR_COST * num_hashclauses * outerPlan->plan_rows); 
+                    incInfo->delta_cost[LEFT_STATE] = (int)ceil(DEFAULT_CPU_OPERATOR_COST * num_hashclauses * inner_delta); 
+                    incInfo->delta_cost[RIGHT_STATE] = (int)ceil(DEFAULT_CPU_OPERATOR_COST * num_hashclauses * outer_rows); 
                 }
                 else if (incInfo->leftUpdate && !incInfo->rightUpdate)
                 {
-                    incInfo->delta_cost[RIGHT_STATE] = ceil(DEFAULT_CPU_OPERATOR_COST * num_hashclauses * outer_delta);
+                    incInfo->delta_cost[LEFT_STATE] = DBL_MAX;
+
+                    incInfo->delta_cost[RIGHT_STATE] = (int)ceil(DEFAULT_CPU_OPERATOR_COST * num_hashclauses * outer_delta + org_outer_delta_cost); 
                 }
                 else if (incInfo->leftUpdate && incInfo->rightUpdate)
                 {
-                    incInfo->delta_cost[LEFT_STATE]  = ceil(DEFAULT_CPU_OPERATOR_COST * num_hashclauses * (inner_delta + outer_delta));
-                    incInfo->delta_cost[RIGHT_STATE] = ceil(DEFAULT_CPU_OPERATOR_COST * num_hashclauses * (outer_delta + outerPlan->plan_rows));
+                    incInfo->delta_cost[LEFT_STATE]  = (int)ceil(DEFAULT_CPU_OPERATOR_COST * num_hashclauses * (inner_delta + outer_delta) + org_outer_delta_cost);
+                    incInfo->delta_cost[RIGHT_STATE] = (int)ceil(DEFAULT_CPU_OPERATOR_COST * num_hashclauses * (outer_delta + outer_rows) + org_outer_delta_cost);
                 }
             }
 
-            if (memory && !incInfo->mem_computed[LEFT_STATE])
+            if (action == COST_MEM_UPDATE)
             {
-                incInfo->memory_cost[LEFT_STATE]  = ExecNestLoopMemoryCost((NestLoopState *) ps, &estimate);
-                incInfo->mem_computed[LEFT_STATE] = !estimate; 
-                incInfo->memory_cost[LEFT_STATE] = (incInfo->memory_cost[LEFT_STATE] + 1023) / 1024; 
+                /* No need to upadte memory_cost[RIGHT_STATE] */ 
+                double ratio = incInfo->lefttree->mem_upcoming_rows/incInfo->lefttree->mem_existing_rows;
+                double delta_mem = ratio * (double)incInfo->memory_cost[LEFT_STATE];
+                incInfo->memory_cost[LEFT_STATE] += (int)delta_mem;
             }
 
-            ExecCollectCostInfo(incInfo->lefttree, compute, memory); 
-            ExecCollectCostInfo(incInfo->righttree, compute, memory);
+            ExecCollectCostInfo(incInfo->lefttree, action); 
+            ExecCollectCostInfo(incInfo->righttree, action);
             break;
 
         case INC_SEQSCAN:
         case INC_INDEXSCAN:
-            if (compute)
+            if (action == COST_CPU_INIT)
             {
-                incInfo->prepare_cost[LEFT_STATE] = ceil(plan->startup_cost);
+                incInfo->prepare_cost[LEFT_STATE] = (int)ceil(plan->startup_cost);
                 incInfo->compute_cost = ceil(plan->total_cost - plan->startup_cost); 
             }
+
+            if (action == COST_CPU_UPDATE)
+            {
+                double ratio = incInfo->base_upcoming_rows/incInfo->base_existing_rows;
+                double delta_cost = ratio * (double)incInfo->compute_cost;
+                incInfo->compute_cost += (int)delta_cost;
+            }
+
+            if (action == COST_CPU_INIT || action == COST_CPU_UPDATE)
+            {
+                double ratio = incInfo->base_delta_rows/(incInfo->base_existing_rows + incInfo->base_upcoming_rows);
+                double delta_cost = ratio * (double)incInfo->compute_cost;
+                incInfo->delta_cost[LEFT_STATE] = (int)delta_cost;
+            }
+
             return;  
             break;
 
         case INC_AGGHASH:
             outerPlan = outerPlan(plan); 
-            if (compute)
+            if (action == COST_CPU_INIT)
             {
                 incInfo->prepare_cost[LEFT_STATE] = (int)(ceil(plan->startup_cost - outerPlan->total_cost)); 
                 incInfo->compute_cost = (int)(ceil(plan->total_cost - plan->startup_cost)); 
             }
-             
-            if (memory && !incInfo->mem_computed[LEFT_STATE])
+
+            if (action == COST_CPU_UPDATE)
             {
-                incInfo->memory_cost[LEFT_STATE] = ExecAggMemoryCost((AggState *) ps, &estimate); 
-                incInfo->mem_computed[LEFT_STATE] = !estimate; 
-                incInfo->memory_cost[LEFT_STATE] = (incInfo->memory_cost[LEFT_STATE] + 1023) / 1024; 
+                /* Only update prepare_cost */
+                double ratio = incInfo->lefttree->upcoming_rows / incInfo->lefttree->existing_rows;
+                double delta_cost = ratio * (double)incInfo->prepare_cost[LEFT_STATE];
+                incInfo->prepare_cost[LEFT_STATE] += (int)ceil(delta_cost); 
             }
 
-            ExecCollectCostInfo(incInfo->lefttree, compute, memory); 
+            if (action == COST_CPU_INIT || action == COST_CPU_UPDATE)
+            {
+                /* compute delta_cost */
+                double ratio = incInfo->lefttree->delta_rows / (incInfo->lefttree->existing_rows + incInfo->lefttree->upcoming_rows);
+                double delta_prepare_cost = ratio * (double)incInfo->prepare_cost[LEFT_STATE];
+                incInfo->delta_cost[LEFT_STATE] = (int)(ceil(delta_prepare_cost));
+            }
+             
+            if (action == COST_MEM_UPDATE)
+            {
+                double ratio = incInfo->lefttree->mem_upcoming_rows/incInfo->lefttree->mem_existing_rows;
+                double delta_mem = ratio * (double)incInfo->memory_cost[LEFT_STATE];
+                incInfo->memory_cost[LEFT_STATE] += (int)delta_mem;
+            }
+
+            ExecCollectCostInfo(incInfo->lefttree, action); 
             break;
 
         case INC_AGGSORT:
-            outerPlan = outerPlan(plan); 
-            if (compute)
+            outerPlan = outerPlan(plan);
+
+            if (action == COST_CPU_INIT)
             {
                 incInfo->prepare_cost[LEFT_STATE] = (int)(ceil(plan->startup_cost - outerPlan->startup_cost)); 
-                incInfo->compute_cost = (int)(ceil(plan->total_cost - plan->startup_cost)); 
+                incInfo->compute_cost = (int)(ceil(plan->total_cost - plan->startup_cost));
             }
-            
-            if (memory && !incInfo->mem_computed[LEFT_STATE])
+
+            if (action == COST_CPU_UPDATE)
             {
-                incInfo->memory_cost[LEFT_STATE] = ExecAggMemoryCost((AggState *) ps, &estimate); 
-                incInfo->mem_computed[LEFT_STATE] = !estimate; 
-                incInfo->memory_cost[LEFT_STATE] = (incInfo->memory_cost[LEFT_STATE] + 1023) / 1024; 
+                /* Only update compute_cost */
+                double ratio = incInfo->lefttree->upcoming_rows / incInfo->lefttree->existing_rows;
+                double delta_cost = ratio * (double)incInfo->compute_cost;
+                incInfo->compute_cost += (int)ceil(delta_cost); 
             }
-            ExecCollectCostInfo(incInfo->lefttree, compute, memory); 
+
+            if (action == COST_CPU_INIT || action == COST_CPU_UPDATE)
+            {
+                /* compute delta_cost */
+                double ratio = incInfo->lefttree->delta_rows / (incInfo->lefttree->existing_rows + incInfo->lefttree->upcoming_rows);
+                double delta_compute_cost = ratio * (double)incInfo->compute_cost;
+                incInfo->delta_cost[LEFT_STATE] = (int)(ceil(delta_compute_cost));
+            }
+
+            ExecCollectCostInfo(incInfo->lefttree, action); 
             break; 
 
         case INC_SORT:
             outerPlan = outerPlan(plan); 
-            if (compute)
+
+            if (action == COST_CPU_INIT)
             {
-                incInfo->prepare_cost[LEFT_STATE] = (int)(ceil(plan->startup_cost - outerPlan->total_cost)); 
+                incInfo->prepare_cost[LEFT_STATE] = (int)(ceil(plan->startup_cost - outerPlan->total_cost));
                 incInfo->compute_cost = (int)(ceil(plan->total_cost - plan->startup_cost)); 
             }
 
-            if (memory && !incInfo->mem_computed[LEFT_STATE]) 
+            if (action == COST_CPU_UPDATE)
             {
-                incInfo->memory_cost[LEFT_STATE] = ExecSortMemoryCost((SortState *) ps, &estimate); 
-                incInfo->mem_computed[LEFT_STATE] = !estimate; 
-                incInfo->memory_cost[LEFT_STATE] = (incInfo->memory_cost[LEFT_STATE] + 1023) / 1024; 
+                double ratio = incInfo->lefttree->upcoming_rows / incInfo->lefttree->existing_rows; 
+                double delta_cost = ratio * (double)incInfo->prepare_cost[LEFT_STATE];
+                incInfo->prepare_cost[LEFT_STATE] += (int)ceil(delta_cost); 
+
+                delta_cost = ratio * (double)incInfo->compute_cost; 
+                incInfo->compute_cost += (int)ceil(delta_cost); 
             }
-            ExecCollectCostInfo(incInfo->lefttree, compute, memory); 
+
+            if (action == COST_CPU_INIT || action == COST_CPU_UPDATE)
+            {
+                double ratio = incInfo->lefttree->delta_rows / (incInfo->lefttree->existing_rows + incInfo->lefttree->upcoming_rows); 
+                double delta_cost = ratio * (double)incInfo->prepare_cost[LEFT_STATE];
+                incInfo->delta_cost[LEFT_STATE] = (int)delta_cost; 
+
+                delta_cost = ratio * (double)incInfo->compute_cost; 
+                incInfo->delta_cost[LEFT_STATE] += (int)delta_cost; 
+            }
+
+            if (action == COST_MEM_UPDATE)
+            {
+                /* No need to upadte memory_cost[RIGHT_STATE] */ 
+                double ratio = incInfo->lefttree->mem_upcoming_rows/incInfo->lefttree->mem_existing_rows;
+                double delta_mem = ratio * (double)incInfo->memory_cost[LEFT_STATE];
+                incInfo->memory_cost[LEFT_STATE] += (int)delta_mem;
+            }
+
+            ExecCollectCostInfo(incInfo->lefttree, action);
             break;
 
         case INC_MATERIAL:
             outerPlan = outerIncInfo(incInfo)->ps->plan; 
             plan_rows = outerPlan->plan_rows; 
             plan_width = outerPlan->plan_width; 
-            if (compute)
+
+            if (action == COST_CPU_INIT || action == COST_CPU_UPDATE)
             {
-                incInfo->prepare_cost[LEFT_STATE] = 0;
-                outerPlan = incInfo->parenttree->ps->lefttree->plan; 
-                incInfo->compute_cost = 0;
+                double total_rows = incInfo->lefttree->existing_rows + incInfo->lefttree->upcoming_rows; 
+                incInfo->prepare_cost[LEFT_STATE] = 0; 
+                incInfo->compute_cost = (int)(ceil(DEFAULT_CPU_OPERATOR_COST * total_rows));
+
+                /* Compute keep_cost */
                 if (incInfo->incState[LEFT_STATE] == STATE_DROP)
-                    incInfo->keep_cost[LEFT_STATE] =  (int)(ceil(2 * DEFAULT_CPU_OPERATOR_COST * plan_rows));
+                    incInfo->keep_cost[LEFT_STATE] =  (int)(ceil(2 * DEFAULT_CPU_OPERATOR_COST * total_rows));
                 else
-                    incInfo->keep_cost[LEFT_STATE] = 0; 
+                    incInfo->keep_cost[LEFT_STATE] = (int)ceil(2 * DEFAULT_CPU_OPERATOR_COST * incInfo->lefttree->upcoming_rows);
+
+                incInfo->delta_cost[LEFT_STATE] = (int)(ceil(DEFAULT_CPU_OPERATOR_COST * incInfo->delta_rows)); 
             }
-            if (memory && !incInfo->mem_computed[LEFT_STATE])
+
+            if (action == COST_MEM_UPDATE)
             {
-                if (plan == NULL)
-                {
-                    incInfo->memory_cost[LEFT_STATE] = (plan_rows * (MAXALIGN(plan_width) + MAXALIGN(SizeofHeapTupleHeader)) + 1023) / 1024;
-                }
-                else
-                {
-                    incInfo->memory_cost[LEFT_STATE] = ExecMaterialIncMemoryCost((MaterialIncState *) ps); 
-                    incInfo->mem_computed[LEFT_STATE] = true; 
-                }
-                incInfo->memory_cost[LEFT_STATE] = (incInfo->memory_cost[LEFT_STATE] + 1023) / 1024; 
+                /* No need to upadte memory_cost[RIGHT_STATE] */ 
+                double ratio = incInfo->lefttree->mem_upcoming_rows/incInfo->lefttree->mem_existing_rows;
+                double delta_mem = ratio * (double)incInfo->memory_cost[LEFT_STATE];
+                incInfo->memory_cost[LEFT_STATE] += (int)delta_mem;
             }
-            ExecCollectCostInfo(incInfo->lefttree, compute, memory); 
+
+            ExecCollectCostInfo(incInfo->lefttree, action); 
             break; 
 
         default:
-            elog(ERROR, "CollectCost unrecognized nodetype: %u", ps->type);
+            elog(ERROR, "CollectCost unrecognized nodetype: %u", incInfo->type);
             return NULL; 
     }
 }
@@ -1737,8 +2138,8 @@ static void ExecSwapinIQPBase(EState *estate, PlanState *parent, iqp_base *base)
                 if (base->base_ps[i] == NULL)
                     elog(ERROR, "Multiple input for the same table");
 
-                base->base_ps[i]->plan->delta_cost = base->base_ps[i]->plan->total_cost - parent->lefttree->plan->total_cost; 
-                Assert(base->base_ps[i]->plan->delta_cost >= 0); 
+                base->base_ps[i]->plan->diff_cost = base->base_ps[i]->plan->total_cost - parent->lefttree->plan->total_cost; 
+                Assert(base->base_ps[i]->plan->diff_cost >= 0); 
 
                 base->parent_ps[i] = parent; 
                 base->old_base_ps[i] = parent->lefttree;
@@ -1766,8 +2167,8 @@ static void ExecSwapinIQPBase(EState *estate, PlanState *parent, iqp_base *base)
                 if (base->base_ps[i] == NULL)
                     elog(ERROR, "Multiple input for the same table");
 
-                base->base_ps[i]->plan->delta_cost = base->base_ps[i]->plan->total_cost - parent->righttree->plan->total_cost; 
-                Assert(base->base_ps[i]->plan->delta_cost >= 0); 
+                base->base_ps[i]->plan->diff_cost = base->base_ps[i]->plan->total_cost - parent->righttree->plan->total_cost; 
+                Assert(base->base_ps[i]->plan->diff_cost >= 0); 
 
                 base->parent_ps[i] = parent; 
                 base->old_base_ps[i] = parent->righttree;
@@ -1782,7 +2183,9 @@ static void ExecSwapinIQPBase(EState *estate, PlanState *parent, iqp_base *base)
         }
 
         if (i == base->base_num)
+        {
             elog(ERROR, "%d not found", rightSS->ss.ss_currentRelation->rd_id); 
+        }
     }
 
     if (parent->lefttree != NULL)
@@ -1812,18 +2215,18 @@ static void ExecSwapoutIQPBase(iqp_base *base)
     }
 }
 
-static Cost PropagateDeltaCost(Plan *parent)
+static Cost PropagateDiffCost(Plan *parent)
 {
     Cost leftCost = 0, rightCost = 0; 
 
     if (parent->lefttree == NULL && parent->righttree == NULL)
-        return parent->delta_cost; 
+        return parent->diff_cost; 
 
     if (parent->lefttree != NULL)
-        leftCost = PropagateDeltaCost(parent->lefttree);
+        leftCost = PropagateDiffCost(parent->lefttree);
 
     if (parent->righttree != NULL)
-        rightCost = PropagateDeltaCost(parent->righttree);
+        rightCost = PropagateDiffCost(parent->righttree);
 
     if (parent->lefttree != NULL && parent->righttree != NULL)
     {

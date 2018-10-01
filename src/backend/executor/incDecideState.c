@@ -413,7 +413,7 @@ MaterialDP(DPMeta *dpmeta, int i, int j, IncInfo *incInfo)
 
     if (j >= state_mcost && incInfo->stateExist[LEFT_STATE])
     {
-        cand_cost[BD_KEEP] = deltaCost[left][j - state_mcost] + state_kcost;
+        cand_cost[BD_KEEP] = deltaCost[left][j - state_mcost] + state_kcost + incInfo->delta_cost[LEFT_STATE];
         cand_memleft[BD_KEEP] = j - state_mcost; 
     }
 
@@ -457,8 +457,8 @@ SimpleDropDP(DPMeta *dpmeta, int i, int j, IncInfo *incInfo)
     /* Consider Update */
     if (incInfo->leftUpdate) 
     {
-        dpmeta->deltaCost[i][j] += DELTA_COST; 
-        dpmeta->bdCost[i][j] += DELTA_COST; 
+        dpmeta->deltaCost[i][j] += incInfo->delta_cost[LEFT_STATE]; 
+        dpmeta->bdCost[i][j] += incInfo->delta_cost[LEFT_STATE]; 
     }
 
     /* Consider the cost of subtree */
@@ -467,7 +467,7 @@ SimpleDropDP(DPMeta *dpmeta, int i, int j, IncInfo *incInfo)
         int left = incInfo->lefttree->id; 
         dpmeta->bdCost[i][j] += dpmeta->bdCost[left][j]; 
 
-        if (incInfo->leftUpdate) /* TODO: we assume recomputation here for Aggregation here */
+        if (incInfo->leftUpdate) /* TODO: we assume recomputation for Aggregation here; note that delta cost is already included */
         {
             if (incInfo->type == INC_AGGSORT) 
             {
@@ -480,7 +480,6 @@ SimpleDropDP(DPMeta *dpmeta, int i, int j, IncInfo *incInfo)
                 dpmeta->deltaLeftPull[i][j] = PULL_DELTA;
             } 
         }
-
     }
 }
 
@@ -507,15 +506,15 @@ SortDPHasUpdate (DPMeta *dpmeta, int i, int j, IncInfo *incInfo)
     PullAction cand_leftpull[NONJOIN_OPTIONS] =  {PULL_DELTA, PULL_DELTA, PULL_BATCH_DELTA, PULL_DELTA};
     PullAction cand_rightpull[NONJOIN_OPTIONS] = {PULL_DELTA, PULL_DELTA, PULL_DELTA, PULL_DELTA}; 
 
-    cand_cost[DELTA_DROP] = DELTA_COST + deltaCost[left][j]; /* Always drop */; 
+    cand_cost[DELTA_DROP] = deltaCost[left][j] + incInfo->delta_cost[LEFT_STATE]; /* Always drop */ 
     cand_memleft[DELTA_DROP] = j; 
 
-    cand_cost[BD_DROP]    = bdCost[left][j] + incInfo->prepare_cost[LEFT_STATE] + incInfo->compute_cost + DELTA_COST;
+    cand_cost[BD_DROP]    = bdCost[left][j] + incInfo->prepare_cost[LEFT_STATE] + incInfo->delta_cost[LEFT_STATE] + incInfo->compute_cost; 
     cand_memleft[BD_DROP] = j; 
 
     if (j >= state_mcost && incInfo->stateExist[LEFT_STATE])
     {
-        cand_cost[BD_KEEP] = deltaCost[left][j - state_mcost] + DELTA_COST;
+        cand_cost[BD_KEEP] = deltaCost[left][j - state_mcost] + incInfo->prepare_cost[LEFT_STATE] + incInfo->delta_cost[LEFT_STATE] + incInfo->compute_cost; 
         cand_memleft[BD_KEEP] = j - state_mcost; 
     }
 
@@ -600,16 +599,16 @@ AggDPHasUpdate (DPMeta *dpmeta, int i, int j, IncInfo *incInfo)
     PullAction cand_leftpull[NONJOIN_OPTIONS] =  {PULL_BATCH_DELTA, PULL_DELTA, PULL_BATCH_DELTA, PULL_DELTA};
     PullAction cand_rightpull[NONJOIN_OPTIONS] = {PULL_DELTA, PULL_DELTA, PULL_DELTA, PULL_DELTA}; 
 
-    cand_cost[DELTA_DROP] = bdCost[left][j] + state_pcost + DELTA_COST; 
+    cand_cost[DELTA_DROP] = bdCost[left][j] + state_pcost + incInfo->compute_cost + incInfo->delta_cost[LEFT_STATE]; 
     cand_memleft[DELTA_DROP] = j; 
 
-    cand_cost[BD_DROP]    = cand_cost[DELTA_DROP] + incInfo->compute_cost; 
+    cand_cost[BD_DROP]    = cand_cost[DELTA_DROP]; 
     cand_memleft[BD_DROP] = j; 
 
     if (j >= state_mcost && incInfo->stateExist[LEFT_STATE])
     {
-        cand_cost[DELTA_KEEP] = deltaCost[left][j - state_mcost] + DELTA_COST; 
-        cand_cost[BD_KEEP] = cand_cost[DELTA_KEEP] + incInfo->compute_cost; 
+        cand_cost[DELTA_KEEP] = deltaCost[left][j - state_mcost] + incInfo->delta_cost[LEFT_STATE] + incInfo->compute_cost; 
+        cand_cost[BD_KEEP] = cand_cost[DELTA_KEEP]; 
         cand_memleft[DELTA_KEEP] = j - state_mcost;
         cand_memleft[BD_KEEP]    = cand_memleft[DELTA_KEEP]; 
     }

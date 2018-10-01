@@ -19,7 +19,8 @@ extern char *iqp_query;
 extern bool gen_mem_info;
 extern bool enable_incremental;
 extern int  memory_budget;
-extern bool use_sym_hashjoin; 
+extern bool use_sym_hashjoin;
+extern bool use_material;
 
 /*
  * We need to define several states used by TupleTableSlot

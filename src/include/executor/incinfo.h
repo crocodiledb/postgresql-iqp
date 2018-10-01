@@ -26,6 +26,27 @@ typedef void *(*ExecDPNode) (struct DPMeta *dpmeta, int i, int j, struct IncInfo
 #define innerIncInfo(node)		(((IncInfo *)(node))->righttree)
 #define outerIncInfo(node)		(((IncInfo *)(node))->lefttree)
 
+
+/*
+ * Actions for rows collection
+ * */
+typedef enum RowAction
+{
+    ROW_CPU,
+    ROW_MEM
+} RowAction;
+
+/*
+ * Actions for Cost collection
+ * */
+typedef enum CostAction
+{
+    COST_CPU_INIT,
+    COST_MEM_INIT,
+    COST_CPU_UPDATE,
+    COST_MEM_UPDATE
+} CostAction; 
+
 /*
  * Whether we drop or keep (in memory or on disk) the state of a node 
  */
@@ -89,26 +110,65 @@ typedef struct IncInfo
     Inc_Tag type; 
     struct PlanState *ps; 
 
-    /* Pointers to left/right/parent subtrees. 
+    /* 
+     * Pointers to left/right/parent subtrees. 
      * They are initialized by ExecInitIncInfo. 
-     */
+     * */
     struct IncInfo *parenttree; 
     struct IncInfo *lefttree; 
     struct IncInfo *righttree; 
 
     int trigger_computation;
-    int id;  
+    int id;
+
+    /*
+     * Track these for CPU cost estimation
+     * */
+    double existing_rows;
+    double upcoming_rows;
+    double delta_rows; 
+
+    double base_existing_rows;
+    double base_upcoming_rows;
+    double base_delta_rows;
+
+    /*
+     * Track these for Memory cost estimation
+     * */
+    double mem_existing_rows;
+    double mem_upcoming_rows;
+    double mem_delta_rows;
 
     /*
      * memory_cost is initialized when the batch processing is done
      * compute_cost is initialized as the estimated cost in plan tree 
      */
     ExecDPNode execDPNode; 
-    int compute_cost;
-    int memory_cost[MAX_STATE]; 
-    int prepare_cost[MAX_STATE];
+    
+    /* The computation cost for original query processing */ 
+    int compute_cost; 
+
+    /* The memory cost of keeping left state or right state */
+    int memory_cost[MAX_STATE];
+
+    /* The local computation cost generated between the first tuple arrives at the operator 
+     * and the first tuple is output from the operator
+     *
+     * For hash join and nestloop, it is stored in prepare_cost[RIGHT_STATE]; 
+     * otherwise, it is stored in prepare_cost[LEFT_STATE]
+     * */
+    int prepare_cost[MAX_STATE]; 
+
+    /* The computation cost of processing delta
+     * delta_cost[LEFT_STATE]  represents the case where the left state is kept
+     * delta_cost[RIGHT_STATE] represents the case where the right state is kept
+     * */
     int delta_cost[MAX_STATE];
+
+    /* The computation cost of keeping left state or right state 
+     * */
     int keep_cost[MAX_STATE]; 
+
     bool mem_computed[MAX_STATE];  
 
     /* Does left or right substrees have deltas; will only be used in the compile time */

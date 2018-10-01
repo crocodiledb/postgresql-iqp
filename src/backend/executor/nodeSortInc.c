@@ -162,6 +162,8 @@ ExecSortInc(PlanState *pstate)
         //MarkTupComplete(slot, node->isComplete);
     }
 
+    pstate->rows_emitted++; 
+
 	return slot;
 }
 
@@ -179,6 +181,7 @@ ExecInitSortInc(SortState *node)
     node->isEOF = true;
     node->stashedstate = NULL;
     node->tuplesortstate = NULL; 
+    node->ss.ps.rows_emitted = 0;
 }
 
 /* ----------------------------------------------------------------

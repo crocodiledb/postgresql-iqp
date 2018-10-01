@@ -2475,6 +2475,7 @@ ExecAggInc(PlanState *pstate)
     TupleTableSlot * result_slot = ExecAgg(pstate);
     if (!TupIsNull(result_slot))
     {
+        pstate->rows_emitted++; 
         return result_slot;
     }
     else
@@ -2502,6 +2503,8 @@ ExecInitAggInc(AggState *aggstate)
     aggstate->isComplete = false;
     aggstate->distGroups = 0;
     aggstate->table_created = true; 
+
+    aggstate->ss.ps.rows_emitted = 0;
 }
 
 void 

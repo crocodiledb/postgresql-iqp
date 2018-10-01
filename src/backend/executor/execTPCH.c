@@ -35,6 +35,14 @@ double bd_prob;
 #define CUSTOMER_MAX_ROW (150000  * SCALE_FACTOR)
 #define SUPPLIER_MAX_ROW (10000   * SCALE_FACTOR)
 
+#define LINEITEM_AMP_FACTOR 1
+#define ORDERS_AMP_FACTOR   0.25
+#define PARTSUPP_AMP_FACTOR 4
+#define PART_AMP_FACTOR     1
+#define CUSTOMER_AMP_FACTOR 1
+#define SUPPLIER_AMP_FACTOR 1
+
+
 #define MAX_DELTA_NUM 10
 #define MIN_DELTA_PERCENT 0.000999
 #define EXP_DELTA 0.01
@@ -191,7 +199,8 @@ int
 PopulateUpdate(TPCH_Update *update, int numdelta)
 {
     int expected, width; 
-    double max_row; 
+    double max_row;
+    double table_amp_factor; 
     char buffer[STR_BUFSIZE];
     srand(time(0)); 
 
@@ -212,20 +221,39 @@ PopulateUpdate(TPCH_Update *update, int numdelta)
         update->tpch_delta[i].delta_array = palloc(sizeof(int) * (new_numdelta + 1)); 
 
         if (strcmp(update->update_tables[i], "lineitem") == 0)
+        {
             max_row = LINEITEM_MAX_ROW;
+            table_amp_factor = LINEITEM_AMP_FACTOR;
+        }
         else if (strcmp(update->update_tables[i], "orders") == 0)
-            max_row = ORDERS_MAX_ROW; 
+        {
+            max_row = ORDERS_MAX_ROW;
+            table_amp_factor = ORDERS_AMP_FACTOR;
+        }
         else if (strcmp(update->update_tables[i], "customer") == 0)
-            max_row = CUSTOMER_MAX_ROW; 
+        {
+            max_row = CUSTOMER_MAX_ROW;
+            table_amp_factor = CUSTOMER_AMP_FACTOR;
+        }
         else if (strcmp(update->update_tables[i], "partsupp") == 0)
+        {
             max_row = PARTSUPP_MAX_ROW;
+            table_amp_factor = PARTSUPP_AMP_FACTOR;
+        }
         else if (strcmp(update->update_tables[i], "part") == 0)
+        {
             max_row = PART_MAX_ROW;
+            table_amp_factor = PART_AMP_FACTOR;
+        }
         else if (strcmp(update->update_tables[i], "supplier") == 0)
+        {
             max_row = SUPPLIER_MAX_ROW; 
+            table_amp_factor = SUPPLIER_AMP_FACTOR; 
+        }
         else
             elog(ERROR, "Table %s", update->update_tables[i]);
 
+        update->table_amp_factor[i] = table_amp_factor;
         update->tpch_delta[i].delta_array[new_numdelta] = max_row + 1; 
         expected = (int)(max_row * EXP_DELTA);
         width = (int) (max_row * WIDTH_DELTA); 
@@ -279,15 +307,21 @@ PopulateUpdate(TPCH_Update *update, int numdelta)
     return new_numdelta; 
 }
 
-bool
+int 
 CheckTPCHUpdate(TPCH_Update *update, int oid, int delta_index)
 {
+    int begin, end;
     for(int i = 0; i < update->numUpdates; i++)
     {
-        if (update->table_oid[i] == oid && update->tpch_delta[i].delta_array[delta_index] != update->tpch_delta[i].delta_array[delta_index + 1])
-            return true;
+        begin = update->tpch_delta[i].delta_array[delta_index];
+        end = update->tpch_delta[i].delta_array[delta_index + 1]; 
+        if (update->table_oid[i] == oid && begin != end)
+        {
+           double rows = (double)(end - begin);
+           return (int)ceil(rows * update->table_amp_factor[i]); 
+        }
     }
-    return false; 
+    return 0; 
 }
 
 bool 

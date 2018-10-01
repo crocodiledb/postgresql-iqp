@@ -70,7 +70,10 @@ ExecMaterialInc(PlanState *pstate)
 	if (!eof_tuplestore)
 	{
 		if (densestore_gettupleslot(tuplestorestate, slot))
+        {
+            node->ss.ps.rows_emitted++;
 			return slot;
+        }
 		eof_tuplestore = true;
 	}
 
@@ -110,6 +113,7 @@ ExecMaterialInc(PlanState *pstate)
 	/*
 	 * We can just return the subplan's returned tuple, without copying.
 	 */
+    node->ss.ps.rows_emitted++; 
 	return outerslot;
 }
 
@@ -131,6 +135,8 @@ ExecInitMaterialInc(Material *node, EState *estate, int eflags)
 	matstate->ss.ps.plan = (Plan *) node;
 	matstate->ss.ps.state = estate;
 	matstate->ss.ps.ExecProcNode = ExecMaterialInc;
+
+    matstate->ss.ps.rows_emitted = 0;
 
 
 	/*

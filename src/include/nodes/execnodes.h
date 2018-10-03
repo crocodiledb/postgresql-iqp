@@ -555,7 +555,8 @@ typedef struct EState
     struct ModifyTableState *writer_mt; 
 
     struct DPMeta      *dpmeta; 
-    struct TPCH_Update *tpch_update; 
+    struct TPCH_Update *tpch_update;
+    struct TPCH_Update *wrong_tpch_update; 
     int                 numDelta;           /* totem: number of delta we may have */ 
     int                 deltaIndex;         /* totem: the current delta */
     bool                leftChildExist; 

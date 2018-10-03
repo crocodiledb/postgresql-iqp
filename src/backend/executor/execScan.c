@@ -478,6 +478,7 @@ ExecScanInc(ScanState *node,
                 elog(ERROR, "PullAction %d not supported", incInfo->leftAction); 
             }
 
+            node->ps.rows_emitted++;
             return slot; 
         }
 	}
@@ -558,6 +559,8 @@ ExecScanInc(ScanState *node,
 			/*
 			 * Found a satisfactory scan tuple.
 			 */
+            node->ps.rows_emitted++;
+
 			if (projInfo)
 			{
 				/*
@@ -565,7 +568,7 @@ ExecScanInc(ScanState *node,
 				 * and return it.
 				 */
                 TupleTableSlot *retslot = ExecProject(projInfo);
-                MarkTupDelta(retslot, isDelta); 
+                MarkTupDelta(retslot, isDelta);
                 return retslot;
 			}
 			else

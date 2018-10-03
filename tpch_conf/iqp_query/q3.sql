@@ -1,6 +1,6 @@
 set max_parallel_workers_per_gather to 0;
 set work_mem to 1000000;
-set memory_budget to 3000;
+set memory_budget to 1500000;
 set decision_method to dp;
 
 set tpch_delta_mode to uniform; 
@@ -30,4 +30,5 @@ group by
 order by
 	revenue desc,
 	i3_o_orderdate;
+
 

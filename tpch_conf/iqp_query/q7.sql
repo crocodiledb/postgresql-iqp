@@ -2,7 +2,6 @@ set max_parallel_workers_per_gather to 0;
 set work_mem to 1000000;
 set memory_budget to 0;
 set decision_method to dp;
-set tpch_updates to 'supplier,lineitem,orders,customer';
 
 set enable_nestloop to off;
 set enable_indexscan to off;
@@ -11,6 +10,7 @@ set enable_mergejoin to off;
 set geqo to off;
 
 set enable_incremental to on;
+set tpch_updates to 'supplier,lineitem,orders,customer';
 set iqp_query to 'q7';
 set gen_mem_info to off; 
 

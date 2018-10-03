@@ -182,15 +182,19 @@ ExecHashJoinReal(PlanState *pstate)
 				/*
 				 * create the hash table
 				 */
-                if (incInfo->rightAction != PULL_DELTA)
+
+                /*
+                 * This case is deltaKeepLeft with right only update
+                 * */
+                if (outerHashTable != NULL && incInfo->rightAction == PULL_DELTA) 
+                {
+                    hashtable = NULL;
+                }
+                else
                 {
 				    hashtable = ExecHashTableCreate((Hash *) hashNode->ps.plan,
 					    							node->hj_HashOperators,
 						    						HJ_FILL_INNER(node));
-                }
-                else
-                {
-                    hashtable = NULL;
                 }
 
     			node->hj_HashTable = hashtable;

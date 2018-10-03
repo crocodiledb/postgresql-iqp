@@ -68,7 +68,7 @@ ExecInitDBToaster(EState *estate, PlanState *root)
     MemoryContext old = MemoryContextSwitchTo(estate->es_query_cxt); 
 
     /* Potential Updates of TPC-H */
-    estate->tpch_update = ExecInitTPCHUpdate(); 
+    estate->tpch_update = ExecInitTPCHUpdate(tables_with_update, false); 
     estate->numDelta = estate->tpch_update->numdelta; 
     estate->deltaIndex = 0; 
 

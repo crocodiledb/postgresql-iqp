@@ -15,7 +15,14 @@
 #include <string.h>
 
 char *tables_with_update;
-double bd_prob;  
+double bd_prob;
+
+#define LINEITEM_AMP_FACTOR 1
+#define ORDERS_AMP_FACTOR   0.25
+#define PARTSUPP_AMP_FACTOR 4
+#define PART_AMP_FACTOR     1
+#define CUSTOMER_AMP_FACTOR 1
+#define SUPPLIER_AMP_FACTOR 1
 
 #define LINEITEM_OID 35147
 #define ORDERS_OID   35139
@@ -35,14 +42,6 @@ double bd_prob;
 #define CUSTOMER_MAX_ROW (150000  * SCALE_FACTOR)
 #define SUPPLIER_MAX_ROW (10000   * SCALE_FACTOR)
 
-#define LINEITEM_AMP_FACTOR 1
-#define ORDERS_AMP_FACTOR   0.25
-#define PARTSUPP_AMP_FACTOR 4
-#define PART_AMP_FACTOR     1
-#define CUSTOMER_AMP_FACTOR 1
-#define SUPPLIER_AMP_FACTOR 1
-
-
 #define MAX_DELTA_NUM 10
 #define MIN_DELTA_PERCENT 0.000999
 #define EXP_DELTA 0.01
@@ -60,7 +59,7 @@ int exist_mask[DEFAULT_MASK_SIZE] = {0x1, 0x2, 0x3};
 #define CHECK_EXIST_MASK(mask, i) \
     ((mask & 1 << i) != 0)
 
-int delta_count = 0;
+int delta_count = 3;
 tpch_delta_mode delta_mode = TPCH_UNIFORM; 
 
 static char *newstr()
@@ -70,15 +69,15 @@ static char *newstr()
     return str;
 }
 
-TPCH_Update *ExecInitTPCHUpdate()
+TPCH_Update *ExecInitTPCHUpdate(char *tablenames, bool wrong_prediction)
 {
     TPCH_Update *update;
-    if (delta_mode == TPCH_DEFAULT) 
+    if (delta_mode == TPCH_DEFAULT && !wrong_prediction) 
         update = DefaultTPCHUpdate(delta_count);
     else
-        update = BuildTPCHUpdate(tables_with_update);
+        update = BuildTPCHUpdate(tablenames);
 
-    (void) PopulateUpdate(update, delta_count); 
+    (void) PopulateUpdate(update, delta_count, wrong_prediction); 
 
     return update;
 }
@@ -196,11 +195,11 @@ static double *Binomial(int *numdelta)
 }
 
 int 
-PopulateUpdate(TPCH_Update *update, int numdelta)
+PopulateUpdate(TPCH_Update *update, int numdelta, bool wrong_prediction)
 {
     int expected, width; 
     double max_row;
-    double table_amp_factor; 
+    double amp_factor; 
     char buffer[STR_BUFSIZE];
     srand(time(0)); 
 
@@ -215,7 +214,8 @@ PopulateUpdate(TPCH_Update *update, int numdelta)
     update->numdelta =new_numdelta; 
 
     update->tpch_delta = palloc(sizeof(TPCH_Delta) * update->numUpdates);
-    update->delete_commands = palloc(sizeof(char *) * update->numUpdates); 
+    update->delete_commands = palloc(sizeof(char *) * update->numUpdates);
+    update->table_amp_factor = palloc(sizeof(double) * update->numUpdates);
     for (int i = 0; i < update->numUpdates; i++)
     {
         update->tpch_delta[i].delta_array = palloc(sizeof(int) * (new_numdelta + 1)); 
@@ -223,37 +223,37 @@ PopulateUpdate(TPCH_Update *update, int numdelta)
         if (strcmp(update->update_tables[i], "lineitem") == 0)
         {
             max_row = LINEITEM_MAX_ROW;
-            table_amp_factor = LINEITEM_AMP_FACTOR;
+            amp_factor = LINEITEM_AMP_FACTOR;
         }
         else if (strcmp(update->update_tables[i], "orders") == 0)
         {
             max_row = ORDERS_MAX_ROW;
-            table_amp_factor = ORDERS_AMP_FACTOR;
+            amp_factor = ORDERS_AMP_FACTOR;
         }
         else if (strcmp(update->update_tables[i], "customer") == 0)
         {
             max_row = CUSTOMER_MAX_ROW;
-            table_amp_factor = CUSTOMER_AMP_FACTOR;
+            amp_factor = CUSTOMER_AMP_FACTOR;
         }
         else if (strcmp(update->update_tables[i], "partsupp") == 0)
         {
             max_row = PARTSUPP_MAX_ROW;
-            table_amp_factor = PARTSUPP_AMP_FACTOR;
+            amp_factor = PARTSUPP_AMP_FACTOR;
         }
         else if (strcmp(update->update_tables[i], "part") == 0)
         {
             max_row = PART_MAX_ROW;
-            table_amp_factor = PART_AMP_FACTOR;
+            amp_factor = PART_AMP_FACTOR;
         }
         else if (strcmp(update->update_tables[i], "supplier") == 0)
         {
             max_row = SUPPLIER_MAX_ROW; 
-            table_amp_factor = SUPPLIER_AMP_FACTOR; 
+            amp_factor = SUPPLIER_AMP_FACTOR; 
         }
         else
             elog(ERROR, "Table %s", update->update_tables[i]);
 
-        update->table_amp_factor[i] = table_amp_factor;
+        update->table_amp_factor[i] = amp_factor;
         update->tpch_delta[i].delta_array[new_numdelta] = max_row + 1; 
         expected = (int)(max_row * EXP_DELTA);
         width = (int) (max_row * WIDTH_DELTA); 
@@ -261,32 +261,40 @@ PopulateUpdate(TPCH_Update *update, int numdelta)
         for (int j = new_numdelta - 1; j >= 0; j--)
         {
             int delta_size = 0;
-            if (delta_mode == TPCH_DEFAULT) /* default settings */
+
+            if (wrong_prediction)
             {
-                int mask = update->exist_mask[j];
-                if (CHECK_EXIST_MASK(mask, i))
-                    delta_size = Uniform(expected, width);
-                else
-                    delta_size = 0; 
-            }
-            else if (delta_mode == TPCH_BINOMIAL)
-            {
-                delta_size = (int)(bd_percent[j] * max_row);
-            }
-            else if (delta_mode == TPCH_UNIFORM)
-            {
-                delta_size = Uniform(expected, width); 
-            }
-            else if (delta_mode == TPCH_DECAY)
-            {
-                if (i >= j)
-                    delta_size = Uniform(expected, width);
-                else
-                    delta_size = 0; 
+                delta_size = expected; 
             }
             else
             {
-                elog(ERROR, "mode %d not found", delta_mode); 
+                if (delta_mode == TPCH_DEFAULT) /* default settings */
+                {
+                    int mask = update->exist_mask[j];
+                    if (CHECK_EXIST_MASK(mask, i))
+                        delta_size = Uniform(expected, width);
+                    else
+                        delta_size = 0; 
+                }
+                else if (delta_mode == TPCH_BINOMIAL)
+                {
+                    delta_size = (int)(bd_percent[j] * max_row);
+                }
+                else if (delta_mode == TPCH_UNIFORM)
+                {
+                    delta_size = Uniform(expected, width); 
+                }
+                else if (delta_mode == TPCH_DECAY)
+                {
+                    if (i >= j)
+                        delta_size = Uniform(expected, width);
+                    else
+                        delta_size = 0; 
+                }
+                else
+                {
+                    elog(ERROR, "mode %d not found", delta_mode); 
+                }
             }
 
             update->tpch_delta[i].delta_array[j] = update->tpch_delta[i].delta_array[j + 1] - delta_size; 
@@ -299,9 +307,12 @@ PopulateUpdate(TPCH_Update *update, int numdelta)
         memset(buffer, 0, STR_BUFSIZE);
         sprintf(buffer, " %d", update->tpch_delta[i].delta_array[0]); 
         strcat(update->delete_commands[i], buffer); 
-       
-        elog(NOTICE, "delete command %s", update->delete_commands[i]); 
-        system(update->delete_commands[i]);
+      
+        if (!wrong_prediction) 
+        {
+            elog(NOTICE, "delete command %s", update->delete_commands[i]); 
+            system(update->delete_commands[i]);
+        }
     }
 
     return new_numdelta; 

@@ -67,10 +67,13 @@ bool use_sym_hashjoin = true;
 bool use_default_tpch = false;
 bool know_dist_only = false; 
 
-bool useBruteForce = false; 
+bool useBruteForce = false;
 
-char *incTagName[INC_TAG_NUM] = {"INVALID", "HASHJOIN", "MERGEJOIN", "NESTLOOP", "AGGHASH", "AGGSORT", 
-    "SORT", "MATERIAL", "SEQSCAN", "INDEXSCAN"}; 
+char *wrong_table_update = "lineitem,orders";
+bool  useWrongPrediction = false;
+
+char *incTagName[INC_TAG_NUM] = {"HASHJOIN", "MERGEJOIN", "NESTLOOP", "AGGHASH", "AGGSORT", 
+    "SORT", "MATERIAL", "SEQSCAN", "INDEXSCAN","INVALID"}; 
 
 /* Functions for replacing base ps */
 static QueryDesc * ExecIQPBuildPS(EState *estate, char *sqlstr);
@@ -188,7 +191,8 @@ ExecIncStart(EState *estate, PlanState *ps)
         estate->tq_pool = tq_pool; 
 
         /* Potential Updates of TPC-H */
-        estate->tpch_update = ExecInitTPCHUpdate(); 
+        estate->tpch_update = ExecInitTPCHUpdate(tables_with_update, false);
+        estate->wrong_tpch_update = ExecInitTPCHUpdate(wrong_table_update, true); 
         estate->numDelta = estate->tpch_update->numdelta; 
         estate->deltaIndex = 0; 
 
@@ -783,14 +787,22 @@ ExecEstimateUpdate(EState *estate, bool slave)
     {
         ss = reader_ss_array[i]; 
 
-        if (use_default_tpch && know_dist_only)
+        if (useWrongPrediction)
         {
-            update_rows = CheckTPCHUpdate(update, GEN_TQ_KEY(ss->ss_currentRelation), estate->deltaIndex);
+            update_rows = CheckTPCHUpdate(estate->wrong_tpch_update, GEN_TQ_KEY(ss->ss_currentRelation), estate->deltaIndex);
         }
         else
         {
-            update_rows = CheckTPCHUpdate(update, GEN_TQ_KEY(ss->ss_currentRelation), estate->deltaIndex);
+            if (use_default_tpch && know_dist_only)
+            {
+                update_rows = CheckTPCHUpdate(update, GEN_TQ_KEY(ss->ss_currentRelation), estate->deltaIndex);
+            }
+            else
+            {
+                update_rows = CheckTPCHUpdate(update, GEN_TQ_KEY(ss->ss_currentRelation), estate->deltaIndex);
+            }
         }
+
         if (slave)
         {
             ss->ps.ps_IncInfo_slave->leftUpdate = (update_rows != 0);
@@ -822,7 +834,7 @@ ExecIncPropUpdate(IncInfo *incInfo, RowAction action)
         }
         else /* ROW_MEM */
         {
-            double emit_rows = incInfo->mem_existing_rows + incInfo->upcoming_rows; 
+            double emit_rows = incInfo->mem_existing_rows + incInfo->mem_upcoming_rows; 
             selectivity  = emit_rows/base_rows; 
             incInfo->mem_delta_rows = ceil(incInfo->base_delta_rows * selectivity); 
 
@@ -1143,7 +1155,7 @@ ExecCollectCostInfo(IncInfo *incInfo, CostAction action)
                 incInfo->compute_cost = (int)(plan->total_cost - innerPlan->total_cost - outerPlan->total_cost);
 
                 /* Compute keep_cost */
-                incInfo->keep_cost[LEFT_STATE] = (DEFAULT_CPU_OPERATOR_COST * num_hashclauses + DEFAULT_CPU_TUPLE_COST) \
+                incInfo->keep_cost[LEFT_STATE] = (DEFAULT_CPU_OPERATOR_COST * (num_hashclauses + 1)) \
                         * (incInfo->lefttree->existing_rows + incInfo->lefttree->upcoming_rows); 
             }
 
@@ -1161,12 +1173,16 @@ ExecCollectCostInfo(IncInfo *incInfo, CostAction action)
                 /* Update keep_cost */
                 if (incInfo->incState[LEFT_STATE] == STATE_DROP)
                 {
-                    incInfo->keep_cost[LEFT_STATE] = (DEFAULT_CPU_OPERATOR_COST * num_hashclauses + DEFAULT_CPU_TUPLE_COST) \
+                    //incInfo->keep_cost[LEFT_STATE] = (DEFAULT_CPU_OPERATOR_COST * num_hashclauses + DEFAULT_CPU_TUPLE_COST) \
+                    //        * (incInfo->lefttree->existing_rows + incInfo->lefttree->upcoming_rows);
+                    incInfo->keep_cost[LEFT_STATE] = (DEFAULT_CPU_OPERATOR_COST * (num_hashclauses + 1)) \
                             * (incInfo->lefttree->existing_rows + incInfo->lefttree->upcoming_rows); 
                 }
                 else if (incInfo->incState[LEFT_STATE] == STATE_KEEPMEM)
                 {
-                    incInfo->keep_cost[LEFT_STATE] = (DEFAULT_CPU_OPERATOR_COST * num_hashclauses + DEFAULT_CPU_TUPLE_COST) \
+                    //incInfo->keep_cost[LEFT_STATE] = (DEFAULT_CPU_OPERATOR_COST * num_hashclauses + DEFAULT_CPU_TUPLE_COST) \
+                    //        * incInfo->lefttree->upcoming_rows;
+                    incInfo->keep_cost[LEFT_STATE] = (DEFAULT_CPU_OPERATOR_COST * (num_hashclauses + 1)) \
                             * incInfo->lefttree->upcoming_rows; 
                 }
             }
@@ -1239,13 +1255,17 @@ ExecCollectCostInfo(IncInfo *incInfo, CostAction action)
                 /* Update keep_cost */
                 if (incInfo->incState[LEFT_STATE] == STATE_DROP)
                 {
-                    incInfo->keep_cost[LEFT_STATE] = (DEFAULT_CPU_OPERATOR_COST * num_hashclauses + DEFAULT_CPU_TUPLE_COST) \
+                    //incInfo->keep_cost[LEFT_STATE] = (DEFAULT_CPU_OPERATOR_COST * num_hashclauses + DEFAULT_CPU_TUPLE_COST) \
+                    //        * (incInfo->lefttree->existing_rows + incInfo->lefttree->upcoming_rows);
+                    incInfo->keep_cost[LEFT_STATE] = (DEFAULT_CPU_OPERATOR_COST * (num_hashclauses + 1)) \
                             * (incInfo->lefttree->existing_rows + incInfo->lefttree->upcoming_rows); 
                 }
                 else if (incInfo->incState[LEFT_STATE] == STATE_KEEPMEM)
                 {
-                    incInfo->keep_cost[LEFT_STATE] = (DEFAULT_CPU_OPERATOR_COST * num_hashclauses + DEFAULT_CPU_TUPLE_COST) \
-                            * incInfo->lefttree->upcoming_rows; 
+                    //incInfo->keep_cost[LEFT_STATE] = (DEFAULT_CPU_OPERATOR_COST * num_hashclauses + DEFAULT_CPU_TUPLE_COST) \
+                    //        * incInfo->lefttree->upcoming_rows;
+                    incInfo->keep_cost[LEFT_STATE] = (DEFAULT_CPU_OPERATOR_COST * (num_hashclauses + 1)) \
+                            * incInfo->lefttree->upcoming_rows;
                 }
             }
 

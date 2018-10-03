@@ -88,7 +88,6 @@ typedef enum PullAction
 
 typedef enum Inc_Tag
 {
-    INC_INVALID, 
     INC_HASHJOIN,
     INC_MERGEJOIN,
     INC_NESTLOOP,
@@ -98,6 +97,7 @@ typedef enum Inc_Tag
     INC_MATERIAL,
     INC_SEQSCAN,
     INC_INDEXSCAN,
+    INC_INVALID, 
     INC_TAG_NUM
 } Inc_Tag; 
 

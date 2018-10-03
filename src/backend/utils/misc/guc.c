@@ -842,7 +842,15 @@ static struct config_bool ConfigureNamesBool[] =
         false,
         NULL, NULL, NULL
     },
-
+    {
+        {"enable_wrong_prediction", PGC_USERSET, QUERY_TUNING_METHOD,
+            gettext_noop("Enable wrong prediction"),
+            NULL
+        },
+        &useWrongPrediction,
+        false,
+        NULL, NULL, NULL
+    },
 	{
 		{"enable_seqscan", PGC_USERSET, QUERY_TUNING_METHOD,
 			gettext_noop("Enables the planner's use of sequential-scan plans."),
@@ -3147,7 +3155,15 @@ static struct config_string ConfigureNamesString[] =
         "lineitem",
         NULL, NULL, NULL
     },
-
+    {
+        {"wrong_tpch_updates", PGC_USERSET, UNGROUPED,
+            gettext_noop("Set Wrong TPC-H Updates"),
+            NULL
+        },
+        &wrong_table_update,
+        "lineitem",
+        NULL, NULL, NULL
+    },
 	{
 		{"archive_command", PGC_SIGHUP, WAL_ARCHIVING,
 			gettext_noop("Sets the shell command that will be called to archive a WAL file."),

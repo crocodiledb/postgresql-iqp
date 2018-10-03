@@ -69,8 +69,8 @@ bool know_dist_only = false;
 
 bool useBruteForce = false;
 
-char *wrong_table_update = "lineitem,orders";
-bool  useWrongPrediction = false;
+char *wrong_table_update;
+bool  useWrongPrediction;
 
 char *incTagName[INC_TAG_NUM] = {"HASHJOIN", "MERGEJOIN", "NESTLOOP", "AGGHASH", "AGGSORT", 
     "SORT", "MATERIAL", "SEQSCAN", "INDEXSCAN","INVALID"}; 

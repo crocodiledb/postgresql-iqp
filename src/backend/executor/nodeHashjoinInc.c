@@ -750,6 +750,20 @@ ExecInitHashJoinDelta(HashJoinState * node)
 {
     IncInfo * incInfo = node->js.ps.ps_IncInfo; 
     IncInfo * parent = incInfo->parenttree; 
+
+    /* Amend the pull actions */
+    if (incInfo->incState[RIGHT_STATE] == STATE_KEEPMEM)
+    {
+        if (incInfo->rightAction == PULL_DELTA)
+            node->hj_JoinState = HJ_NEED_NEW_INNER; 
+        else if (incInfo->rightAction == PULL_NOTHING)
+        { 
+            node->hj_JoinState = HJ_NEED_NEW_OUTER;
+        }
+        else
+            elog(ERROR, "Pull Action %d Not Possible", incInfo->rightAction); 
+    }
+
     if (parent->lefttree == incInfo)
         node->hj_PullEncoding = EncodePullAction(parent->leftAction);
     else

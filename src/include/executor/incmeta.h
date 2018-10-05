@@ -175,7 +175,7 @@ extern MaterialIncState *ExecBuildMaterialInc(EState *estate);
 
 extern void ExecMaterialIncMarkKeep(MaterialIncState *ms, IncState state); 
 
-extern void ExecHashJoinIncMarkKeep(HashJoinState *hjs, IncState state); 
+extern void ExecHashJoinIncMarkKeep(HashJoinState *hjs, IncState leftState, IncState rightState); 
 
 extern void ExecHashIncreaseNumBuckets(HashJoinTable hashtable);
 

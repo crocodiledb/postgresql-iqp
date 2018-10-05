@@ -1795,6 +1795,7 @@ typedef struct HashJoinState
     bool        hj_isDelta;         /* totem: whether we are in delta processing */
     bool        hj_isComplete;      /* totem: whether we complete the join */
     bool        hj_keep;
+    bool        hj_right_keep;
     bool        hj_KeepInner;       /* totem: wehther we keep the input of the inner subtree */
     bool        hj_KeepOuter;       /* totem: wehther we keep the input of the outer subtree */
     bool        hj_ProbeInner;

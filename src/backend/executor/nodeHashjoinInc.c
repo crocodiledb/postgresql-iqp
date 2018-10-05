@@ -215,7 +215,7 @@ ExecHashJoinReal(PlanState *pstate)
                 innerTupleSlot = ExecProcNode(hashOuterNode);
 
 		        if (TupIsNull(innerTupleSlot))
-                {	
+                {
                     
                     node->hj_JoinState = HJ_NEED_NEW_OUTER; 
 
@@ -252,7 +252,7 @@ ExecHashJoinReal(PlanState *pstate)
 
                 /* We have to compute the hash value and insert the tuple */
                 hashvalue = 0; 
-                if (hashtable != NULL)
+                if (hashtable != NULL && node->hj_right_keep)
                 {
                     econtext->ecxt_innertuple = innerTupleSlot;
                     (void) ExecHashGetHashValue(hashtable, econtext, hashkeys,
@@ -664,6 +664,7 @@ ExecInitHashJoinInc(HashJoinState *node, EState *estate, int eflags)
     node->hj_isComplete = false;
     node->hj_isDelta = false;
     node->hj_keep = true;
+    node->hj_right_keep = true; 
     node->hj_buildtime = 0;
     node->hj_innertime = 0;  
     node->hj_outertime = 0;  
@@ -831,11 +832,11 @@ ExecHashJoinMemoryCost(HashJoinState * node, bool * estimate, bool right)
 }
 
 void 
-ExecHashJoinIncMarkKeep(HashJoinState *hjs, IncState state)
+ExecHashJoinIncMarkKeep(HashJoinState *hjs, IncState leftState, IncState rightState)
 {
-    hjs->hj_keep = (state != STATE_DROP); 
+    hjs->hj_keep = (leftState != STATE_DROP); 
+    hjs->hj_right_keep = (rightState != STATE_DROP);
 }
-
 
 static TupleTableSlot *			/* return: a tuple or NULL */
 ExecHashJoin_NewOuter(PlanState *pstate)

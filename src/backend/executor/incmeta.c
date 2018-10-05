@@ -118,6 +118,9 @@ static void ExecUpgradePlan(EState *estate);
 static void ExecDegradePlan(EState *estate);
 static void ExecGenFullPlan(EState *estate);
 
+/* Mark drop for the last delta*/
+static void ExecMarkDrop(IncInfo **incInfo_array, int numIncInfo); 
+
 /* Functions for generate pull actions */
 static void ExecGenPullAction(IncInfo *incInfo, PullAction parentAction); 
 
@@ -354,6 +357,10 @@ ExecIncRun(EState *estate, PlanState *planstate)
 
             gettimeofday(&end , NULL);
             estate->decisionTime += GetTimeDiff(start, end);  
+        }
+        else /* Last delta */
+        {
+            ExecMarkDrop(estate->es_incInfo, estate->es_numIncInfo); 
         }
 
         /* step 5. generate, wait, collect, and propagate update */
@@ -1561,7 +1568,7 @@ ExecUpgradePlan(EState *estate)
         }
 
         if (incInfo_slave->type == INC_HASHJOIN)
-            ExecHashJoinIncMarkKeep((HashJoinState *)incInfo_slave->ps, incInfo_slave->incState[LEFT_STATE]);
+            ExecHashJoinIncMarkKeep((HashJoinState *)incInfo_slave->ps, incInfo_slave->incState[LEFT_STATE], STATE_KEEPMEM);
 
         if (incInfo_slave->type == INC_NESTLOOP)
             ExecNestLoopIncMarkKeep((NestLoopState *)incInfo_slave->ps, incInfo_slave->incState[LEFT_STATE]); 
@@ -1652,7 +1659,7 @@ ExecGenFullPlan(EState *estate)
         }
 
         if (incInfo_slave->type == INC_HASHJOIN)
-            ExecHashJoinIncMarkKeep((HashJoinState *)incInfo_slave->ps, STATE_KEEPMEM);
+            ExecHashJoinIncMarkKeep((HashJoinState *)incInfo_slave->ps, STATE_KEEPMEM, STATE_KEEPMEM);
 
         if (incInfo_slave->type == INC_NESTLOOP)
             ExecNestLoopIncMarkKeep((NestLoopState *)incInfo_slave->ps, STATE_KEEPMEM); 
@@ -1890,6 +1897,29 @@ ExecCollectPerDeltaInfo(EState *estate)
         fprintf(stateFile, "\n"); 
     }
 }
+
+/* Mark drop for the last delta*/
+static void ExecMarkDrop(IncInfo **incInfo_array, int numIncInfo)
+{
+    IncInfo *incInfo;
+    for (int i = 0; i < numIncInfo; i++)
+    {
+        incInfo = incInfo_array[i];
+        if (incInfo->type == INC_MATERIAL && incInfo->ps != NULL)
+        {
+            ExecMaterialIncMarkKeep((MaterialIncState *)incInfo->ps, STATE_DROP); 
+        }
+        else if (incInfo->type == INC_HASHJOIN)
+        {
+            ExecHashJoinIncMarkKeep((HashJoinState *)incInfo->ps, STATE_DROP, STATE_DROP);
+        }
+        else if (incInfo->type == INC_NESTLOOP)
+        {
+            ExecNestLoopIncMarkKeep((NestLoopState *)incInfo->ps, STATE_DROP); 
+        }
+    }
+}
+
 
 /*
  * Step 3. After dropping/keeping states is done, 

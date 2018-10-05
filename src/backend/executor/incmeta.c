@@ -1053,6 +1053,7 @@ static void ExecGetMemInfo(IncInfo **incInfoArray, int numIncInfo)
     for (int i = 0; i < numIncInfo; i++)
     {
         incInfo = incInfoArray[i];
+        ps = incInfo->ps;
         if (incInfo->type == INC_HASHJOIN)
         {
             tmpMem = ExecHashJoinMemoryCost((HashJoinState *) ps, &estimate, false);

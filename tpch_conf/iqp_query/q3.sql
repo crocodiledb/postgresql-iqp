@@ -9,10 +9,10 @@ set bd_prob to 0.99;
 set enable_incremental to on;
 set tpch_updates to 'orders,lineitem';
 set iqp_query to 'q3';
-set gen_mem_info to off; 
+set gen_mem_info to on; 
 
 set wrong_tpch_updates to 'customer,orders,lineitem';
-set enable_wrong_prediction to on;
+set enable_wrong_prediction to off;
 
 select
 	i3_l_orderkey,
@@ -33,5 +33,4 @@ group by
 order by
 	revenue desc,
 	i3_o_orderdate;
-
 

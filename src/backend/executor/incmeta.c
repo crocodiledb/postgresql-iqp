@@ -1917,7 +1917,7 @@ static void ExecMarkDrop(IncInfo **incInfo_array, int numIncInfo)
             if (!incInfo->leftUpdate && incInfo->incState[RIGHT_STATE] == STATE_KEEPMEM)
                 rightState = STATE_DROP;
             else
-                rightState = STATE_MEM;
+                rightState = STATE_KEEPMEM;
             ExecHashJoinIncMarkKeep((HashJoinState *)incInfo->ps, leftState, rightState);
         }
         else if (incInfo->type == INC_NESTLOOP)

@@ -2964,6 +2964,15 @@ static struct config_real ConfigureNamesReal[] =
         0.9, 0, 1.0,
         NULL, NULL, NULL
     }, 
+    {
+        {"exp_delta", PGC_USERSET, QUERY_TUNING_COST,
+			gettext_noop("setting the delta size"),
+			NULL
+        },
+        &exp_delta, 
+        0.01, 0.001, 0.5,
+        NULL, NULL, NULL
+    }, 
 	{
 		{"seq_page_cost", PGC_USERSET, QUERY_TUNING_COST,
 			gettext_noop("Sets the planner's estimate of the cost of a "

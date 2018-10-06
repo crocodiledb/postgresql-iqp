@@ -14,7 +14,8 @@
 
 extern char *tables_with_update;
 extern double bd_prob; 
-extern enum tpch_delta_mode delta_mode; 
+extern enum tpch_delta_mode delta_mode;
+extern double exp_delta; 
 
 typedef enum tpch_delta_mode {
     TPCH_DEFAULT,

@@ -358,10 +358,6 @@ ExecIncRun(EState *estate, PlanState *planstate)
             gettimeofday(&end , NULL);
             estate->decisionTime += GetTimeDiff(start, end);  
         }
-        else /* Last delta */
-        {
-            ExecMarkDrop(estate->es_incInfo, estate->es_numIncInfo); 
-        }
 
         /* step 5. generate, wait, collect, and propagate update */
         ExecGenUpdate(estate, estate->deltaIndex - 1);
@@ -371,6 +367,12 @@ ExecIncRun(EState *estate, PlanState *planstate)
 
         /* step 6. generate pull actions */
         ExecGenPullAction(estate->es_incInfo[estate->es_numIncInfo - 1], PULL_DELTA); 
+
+        /* Last delta */
+        if (estate->deltaIndex == estate->numDelta)
+        {
+            ExecMarkDrop(estate->es_incInfo, estate->es_numIncInfo); 
+        }
 
         /* step 7. init for delta processing */
         ExecInitDelta(planstate); 
@@ -1905,13 +1907,16 @@ static void ExecMarkDrop(IncInfo **incInfo_array, int numIncInfo)
     for (int i = 0; i < numIncInfo; i++)
     {
         incInfo = incInfo_array[i];
-        if (incInfo->type == INC_MATERIAL && incInfo->ps != NULL)
+        if (incInfo->type == INC_MATERIAL && incInfo->ps != NULL && incInfo->incState[LEFT_STATE] == STATE_KEEPMEM)
         {
             ExecMaterialIncMarkKeep((MaterialIncState *)incInfo->ps, STATE_DROP); 
         }
         else if (incInfo->type == INC_HASHJOIN)
         {
-            ExecHashJoinIncMarkKeep((HashJoinState *)incInfo->ps, STATE_DROP, STATE_DROP);
+            IncState leftState = STATE_DROP, rightState;
+            if (!incInfo->leftUpdate && incInfo->incState[RIGHT_STATE] == STATE_KEEPMEM)
+                rightState = STATE_DROP;
+            ExecHashJoinIncMarkKeep((HashJoinState *)incInfo->ps, leftState, rightState);
         }
         else if (incInfo->type == INC_NESTLOOP)
         {

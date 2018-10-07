@@ -256,8 +256,13 @@ PopulateUpdate(TPCH_Update *update, int numdelta, bool wrong_prediction)
 
         update->table_amp_factor[i] = amp_factor;
         update->tpch_delta[i].delta_array[new_numdelta] = max_row + 1; 
-        expected = (int)(max_row * exp_delta);
-        width = (int) (max_row * WIDTH_DELTA); 
+        expected = (int)(max_row * EXP_DELTA);
+        width = (int) (max_row * WIDTH_DELTA);
+
+        if (strcmp(update->update_tables[i], "lineitem") == 0)
+        {
+            expected = (int)(max_row * exp_delta);
+        }
 
         for (int j = new_numdelta - 1; j >= 0; j--)
         {

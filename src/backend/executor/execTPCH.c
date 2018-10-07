@@ -259,7 +259,7 @@ PopulateUpdate(TPCH_Update *update, int numdelta, bool wrong_prediction)
         expected = (int)(max_row * EXP_DELTA);
         width = (int) (max_row * WIDTH_DELTA);
 
-        if (strcmp(update->update_tables[i], "lineitem") == 0)
+        if (strcmp(update->update_tables[i], "lineitem") == 0 && wrong_prediction)
         {
             expected = (int)(max_row * exp_delta);
         }

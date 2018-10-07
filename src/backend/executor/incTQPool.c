@@ -84,7 +84,7 @@ GetTQUpdate(IncTQPool *tq_pool)
         {
             update_count = GetIncTupQueueSize(pool_reader[i]);
             update_sum += update_count;
-            elog("key %d: Delat %d", pool_reader[i]->tq_key, update_count);
+            elog(NOTICE, "key %d: Delat %d", pool_reader[i]->tq_key, update_count);
         }
     }
     

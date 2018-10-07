@@ -76,11 +76,16 @@ GetTQUpdate(IncTQPool *tq_pool)
 {
     IncTupQueueReader **pool_reader = tq_pool->pool_reader; 
     int update_sum = 0;
+    int update_count = 0;
 
     for(int i = 0; i < tq_pool->maxTQ; i++) 
     {
         if (pool_reader[i] != NULL)
-            update_sum += GetIncTupQueueSize(pool_reader[i]);   
+        {
+            update_count = GetIncTupQueueSize(pool_reader[i]);
+            update_sum += update_count;
+            elog("Delat %d", update_count);
+        }
     }
     
     return update_sum; 

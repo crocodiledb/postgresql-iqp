@@ -15,7 +15,8 @@
 #include <string.h>
 
 char *tables_with_update;
-double  exp_delta; 
+double  wrong_exp_delta;
+double  exp_delta;
 double bd_prob;
 
 #define LINEITEM_AMP_FACTOR 1
@@ -259,7 +260,12 @@ PopulateUpdate(TPCH_Update *update, int numdelta, bool wrong_prediction)
         expected = (int)(max_row * EXP_DELTA);
         width = (int) (max_row * WIDTH_DELTA);
 
-        if (strcmp(update->update_tables[i], "lineitem") == 0 && wrong_prediction)
+        if (wrong_prediction)
+        {
+            expected = (int)(max_row * wrong_exp_delta);
+        }
+
+        if (!wrong_prediction)
         {
             expected = (int)(max_row * exp_delta);
         }

@@ -3789,6 +3789,7 @@ static const struct config_enum_entry decision_method_options[] = {
 	{"bottomup", DM_BOTTOMUP, false},
 	{"memsmallfirst", DM_MEMSMALLFIRST, false},
 	{"membigfirst", DM_MEMBIGFIRST, false},
+    {"recycler", DM_RECYCLER, false},
 	{NULL, 0, false}
 };
 

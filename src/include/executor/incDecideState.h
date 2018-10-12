@@ -42,7 +42,8 @@ typedef enum DecisionMethod
     DM_TOPDOWN,
     DM_BOTTOMUP,
     DM_MEMSMALLFIRST,
-    DM_MEMBIGFIRST
+    DM_MEMBIGFIRST,
+    DM_RECYCLER
 } DecisionMethod; 
 
 /*

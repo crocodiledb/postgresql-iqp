@@ -49,6 +49,7 @@ struct IncTQPool;
 struct TPCH_Update; 
 struct IncTupQueueWriter; 
 struct IncTupQueueReader;
+struct Recycler;
 
 /* ----------------
  *		ExprState node
@@ -568,7 +569,8 @@ typedef struct EState
     bool                isBuild;            /* totem for dbtoaster: do we build hash table for rd_oid or not */
 
     struct DBToaster    *dbt;
-    struct iqp_base     *base; 
+    struct iqp_base     *base;
+    struct Recycler     *recycler;
 } EState;
 
 

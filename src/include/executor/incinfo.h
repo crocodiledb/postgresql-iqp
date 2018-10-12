@@ -183,6 +183,9 @@ typedef struct IncInfo
     IncState incState[MAX_STATE];
     bool     stateExist[MAX_STATE]; 
 
+    /* Support Recyling Algorithm */
+    int      true_cost[MAX_STATE];
+    int      iFactor[MAX_STATE];
 } IncInfo; 
  
 #endif

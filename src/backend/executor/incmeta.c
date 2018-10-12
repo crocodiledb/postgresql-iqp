@@ -35,6 +35,8 @@
 
 #include "utils/snapmgr.h"
 
+#include "executor/incRecycler.h"
+
 #include <math.h>
 #include <string.h>
 #include <float.h>
@@ -253,7 +255,13 @@ ExecIncStart(EState *estate, PlanState *ps)
 
         ExecCollectCostInfo(estate->es_incInfo_slave[estate->es_numIncInfo - 1], COST_CPU_INIT); 
 
-        ExecDecideState(estate->dpmeta, estate->es_incInfo_slave, estate->es_numIncInfo, estate->es_incMemory, true); 
+        if (decision_method == DM_RECYCLER)
+        {
+            estate->recycler = InitializeRecycler(estate->es_incInfo_slave, estate->es_numIncInfo, estate->es_incMemory);
+            ExecRecycler(estate->recycler);
+        }
+        else
+            ExecDecideState(estate->dpmeta, estate->es_incInfo_slave, estate->es_numIncInfo, estate->es_incMemory, true); 
             
         /* Modify Plan */
         ExecUpgradePlan(estate); 
@@ -351,7 +359,13 @@ ExecIncRun(EState *estate, PlanState *planstate)
             ExecCollectCostInfo(estate->es_incInfo_slave[estate->es_numIncInfo - 1], COST_CPU_UPDATE);
             ExecCollectCostInfo(estate->es_incInfo_slave[estate->es_numIncInfo - 1], COST_MEM_UPDATE);
 
-            ExecDecideState(estate->dpmeta, estate->es_incInfo_slave, estate->es_numIncInfo, estate->es_incMemory, true); 
+            if (decision_method == DM_RECYCLER)
+            {
+                UpdateRecycler(estate->recycler);
+                ExecRecycler(estate->recycler);
+            }
+            else
+                ExecDecideState(estate->dpmeta, estate->es_incInfo_slave, estate->es_numIncInfo, estate->es_incMemory, true); 
 
             ExecUpgradePlan(estate); 
 

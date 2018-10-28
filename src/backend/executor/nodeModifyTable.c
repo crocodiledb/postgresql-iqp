@@ -57,6 +57,7 @@
  * totem
  */
 #include "executor/incTupleQueue.h"
+#include "executor/incmeta.h"
 
 
 static bool ExecOnConflictUpdate(ModifyTableState *mtstate,
@@ -2372,7 +2373,11 @@ ExecEndModifyTable(ModifyTableState *node)
      * totem
      */
     if (node->tq_writer)
+    {
+        if (is_complete)
+            MarkCompleteIncTQWriter(node->tq_writer); 
         CloseIncTupQueueWriter(node->tq_writer); 
+    }
 
 	/*
 	 * Allow any FDWs to shut down

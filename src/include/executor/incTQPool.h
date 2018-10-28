@@ -26,6 +26,8 @@ extern bool HasTQUpdate(IncTQPool *tq_pool, Relation r);
 
 extern int GetTQUpdate(IncTQPool *tq_pool); 
 
+extern bool IsTQComplete(IncTQPool *tq_pool, Relation r);
+
 extern IncTupQueueReader * GetTQReader(IncTQPool *tq_pool, Relation r, IncTupQueueReader *tq_reader);
 
 extern void DrainTQReader(IncTQPool *tq_pool, IncTupQueueReader *tq_reader); 

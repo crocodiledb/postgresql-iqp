@@ -1,6 +1,6 @@
 set max_parallel_workers_per_gather to 0;
 set work_mem to 1000000;
-set memory_budget to 1500000;
+set memory_budget to 200000;
 set decision_method to dp;
 
 set enable_nestloop to off;
@@ -15,9 +15,12 @@ set geqo to off;
 set enable_sort to off;
 
 set enable_incremental to on;
-set tpch_updates to 'part,partsupp,supplier,orders,lineitem';
+--set tpch_updates to 'part,partsupp,supplier,orders,lineitem';
+set tpch_updates to 'supplier';
 set iqp_query to 'q9';
 set gen_mem_info to off; 
+set external_delta to on;
+set exp_delta to 0.2;
 
 select
     nation,

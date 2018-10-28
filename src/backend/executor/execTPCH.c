@@ -125,6 +125,8 @@ BuildTPCHUpdate(char *tablenames)
     update->update_tables = (char **)palloc(sizeof(char *) * update->numUpdates);
     update->update_commands = (char **)palloc(sizeof(char *) * update->numUpdates);
     update->table_oid = (int *) palloc(sizeof(int) * update->numUpdates); 
+    update->delta_occur = (bool *) palloc(sizeof(bool) * update->numUpdates);
+    update->table_complete = (bool *) palloc(sizeof(bool) * update->numUpdates);
 
     memset(dup_tablenames, 0, STR_BUFSIZE); 
     strncpy(dup_tablenames, tablenames, strlen(tablenames));
@@ -153,6 +155,9 @@ BuildTPCHUpdate(char *tablenames)
         update->update_commands[i] = newstr();
         strcat(update->update_commands[i], GEN_DELTA); 
         strcat(update->update_commands[i], name); 
+
+        update->delta_occur[i] = false;
+        update->table_complete[i] = false; 
 
         i++; 
         name = strtok(NULL, ","); 
@@ -392,4 +397,54 @@ char *GetTableName(TPCH_Update *update, int oid)
             return update->update_tables[i];
     }
 }
+
+
+void ExtMarkDeltaOccur(TPCH_Update *update, int oid)
+{
+    for(int i = 0; i < update->numUpdates; i++)
+    {
+        if (update->table_oid[i] == oid)
+            update->delta_occur[i] = true;
+    }
+}
+
+void ExtMarkTableComplete(TPCH_Update *update, int oid)
+{
+    for(int i = 0; i < update->numUpdates; i++)
+    {
+        if (update->table_oid[i] == oid)
+            update->table_complete[i] = true;
+    }
+}
+
+
+bool ExtAllTableComplte(TPCH_Update *update)
+{
+    bool all_complete = true; 
+    for(int i = 0; i < update->numUpdates; i++)
+    {
+        if (!update->table_complete[i])
+            all_complete = false;
+    }
+
+    return all_complete;
+}
+
+int ExtCheckTPCHUpdate(TPCH_Update *update, int oid)
+{
+    int i;
+    for (i = 0; i < update->numUpdates; i++)
+    {
+        if (!update->table_complete[i])
+            break;
+    }
+
+    if (update->table_oid[i] == oid)
+        return 100; 
+    else
+        return 0; 
+}
+
+
+
 

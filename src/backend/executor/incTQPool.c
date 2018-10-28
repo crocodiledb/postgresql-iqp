@@ -84,7 +84,7 @@ GetTQUpdate(IncTQPool *tq_pool)
         {
             update_count = GetIncTupQueueSize(pool_reader[i]);
             update_sum += update_count;
-            elog(NOTICE, "key %d: Delat %d", pool_reader[i]->tq_key, update_count);
+            //elog(NOTICE, "key %d: Delta %d", pool_reader[i]->tq_key, update_count);
         }
     }
     
@@ -107,6 +107,29 @@ HasTQUpdate(IncTQPool *tq_pool, Relation r)
         else if (pool_reader[i]->tq_key == key)
         {
             return (GetIncTupQueueSize(pool_reader[i]) > 0);  
+        }
+    }
+            
+    elog(ERROR, "No Relation %d in TQ", key); 
+    return false;
+}
+
+bool
+IsTQComplete(IncTQPool *tq_pool, Relation r)
+{
+    IncTupQueueReader **pool_reader = tq_pool->pool_reader; 
+    key_t key = GEN_TQ_KEY(r); 
+
+    for(int i = 0; i < tq_pool->maxTQ; i++) 
+    {
+        if (pool_reader[i] == NULL)
+        {
+            elog(ERROR, "No Relation %d in TQ", key); 
+            return false;
+        }
+        else if (pool_reader[i]->tq_key == key)
+        {
+            return GetIncTQComplete(pool_reader[i]);
         }
     }
             

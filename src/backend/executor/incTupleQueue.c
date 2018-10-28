@@ -67,7 +67,8 @@ OpenIncTupQueueReader(IncTupQueueReader * tq_reader)
 
     tq->tuple_num = 0;
     tq->head = 0; 
-    tq->tail = 0; 
+    tq->tail = 0;
+    tq->complete = false; 
     tq_reader->tq = tq; 
 
     tq_reader->ss_head = 0;
@@ -79,6 +80,11 @@ int
 GetIncTupQueueSize(IncTupQueueReader *tq_reader)
 {
     return tq_reader->tq->tuple_num; 
+}
+
+bool GetIncTQComplete(IncTupQueueReader *tq_reader)
+{
+    return tq_reader->tq->complete;
 }
 
 IncTupQueueReader *
@@ -239,6 +245,12 @@ WriteIncTupQueue(IncTupQueueWriter *tq_writer,  HeapTuple tup)
     tq->tuple_num++; 
 
     return; 
+}
+
+void
+MarkCompleteIncTQWriter(IncTupQueueWriter * tq_writer)
+{
+    tq_writer->tq->complete = true; 
 }
 
 void  

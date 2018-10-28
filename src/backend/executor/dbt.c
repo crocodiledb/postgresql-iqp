@@ -59,6 +59,8 @@ static int ExecDBTMemCost(DBToaster *dbt, PlanState *root);
 
 static void ShowMemSize(EState *estate); 
 
+static void ReAllocDeltaArray(EState *estate); 
+
 void 
 ExecInitDBToaster(EState *estate, PlanState *root)
 {
@@ -69,7 +71,10 @@ ExecInitDBToaster(EState *estate, PlanState *root)
 
     /* Potential Updates of TPC-H */
     estate->tpch_update = ExecInitTPCHUpdate(tables_with_update, false); 
-    estate->numDelta = estate->tpch_update->numdelta; 
+    if (!external_delta)
+        estate->numDelta = estate->tpch_update->numdelta; 
+    else
+        estate->numDelta = 2; 
     estate->deltaIndex = 0; 
 
     // Build DBTConf and DBToaster
@@ -200,8 +205,13 @@ ExecDBToaster(EState *estate, PlanState *root)
             }
             else
             {
-                ExecDBTResetTQReader(estate); 
-                GenTPCHUpdate(estate->tpch_update, estate->deltaIndex); 
+                ReAllocDeltaArray(estate);
+
+                estate->deltaIndex++;
+
+                ExecDBTResetTQReader(estate);
+                if (!external_delta)
+                    GenTPCHUpdate(estate->tpch_update, estate->deltaIndex - 1); 
                 ExecDBTWaitUpdate(estate); 
                 ExecDBTCollectUpdate(estate); 
 
@@ -209,7 +219,6 @@ ExecDBToaster(EState *estate, PlanState *root)
                 ExecDBTResetMat(dbt, estate, root); 
                 dbt->executed = false; 
 
-                estate->deltaIndex++;
                 continue; 
             }
         }
@@ -272,7 +281,9 @@ static void ExecDBTResetTQReader(EState *estate)
 static void 
 ExecDBTWaitUpdate(EState *estate)
 {
-    int deltasize = 0; 
+    int cur_deltasize  = 0; 
+    int prev_deltasize = 0;
+
     int threshold = DBT_DELTA_THRESHOLD; 
 
     IncTQPool *tq_pool = estate->tq_pool; 
@@ -281,15 +292,17 @@ ExecDBTWaitUpdate(EState *estate)
     {
 		CHECK_FOR_INTERRUPTS();
         
-        deltasize = GetTQUpdate(tq_pool); 
+        cur_deltasize = GetTQUpdate(tq_pool); 
 
-        if (deltasize >= threshold) 
+        if (cur_deltasize >= threshold && cur_deltasize == prev_deltasize) 
         {
-            elog(NOTICE, "delta %d", deltasize); 
+            elog(NOTICE, "delta %d", cur_deltasize); 
             break;
         }
 
-       sleep(1); 
+        prev_deltasize = cur_deltasize;
+
+       sleep(100); 
     }
 }
 
@@ -301,15 +314,25 @@ ExecDBTCollectUpdate(EState *estate)
     DBToaster *dbt = estate->dbt; 
     IncTQPool *tq_pool = estate->tq_pool; 
     ScanState **reader_ss_array = estate->reader_ss; 
-    bool hasUpdate; 
+    bool hasUpdate, isComplete; 
 
     for(int i = 0; i < dbt->base_num; i++) 
     {
         r = reader_ss_array[i]->ss_currentRelation;  
         hasUpdate = HasTQUpdate(tq_pool, r);
+        isComplete = IsTQComplete(tq_pool, r);
+
         dbt->base_array[i]->hasUpdate = hasUpdate; 
 
         reader_ss_array[i]->tq_reader = GetTQReader(tq_pool, r, reader_ss_array[i]->tq_reader); 
+
+        if (hasUpdate && isComplete)
+            ExtMarkTableComplete(estate->tpch_update, GEN_TQ_KEY(r));
+    }
+
+    if (external_delta && ExtAllTableComplte(estate->tpch_update))
+    {
+        estate->numDelta = estate->deltaIndex;
     }
 }
 
@@ -1127,3 +1150,20 @@ static void ShowMemSize(EState *estate)
     }
 }
 
+static void ReAllocDeltaArray(EState *estate)
+{
+    DBToaster *dbt = estate->dbt;
+    if ((estate->deltaIndex + 1) ==  estate->numDelta)
+    {
+        double *old_execTime = dbt->stat->execTime;
+        int *old_memCost  = dbt->stat->memCost;
+        dbt->stat->execTime = palloc(sizeof(double) * (estate->numDelta + 1) * 2 );
+        dbt->stat->memCost  = palloc(sizeof(int) * (estate->numDelta + 1) * 2); 
+        for (int i = 0; i <= estate->numDelta; i++)
+        {
+            dbt->stat->execTime[i] = old_execTime[i];
+            dbt->stat->memCost[i]  = old_memCost[i];
+        }
+        estate->numDelta = (estate->numDelta + 1) * 2;
+    }
+}

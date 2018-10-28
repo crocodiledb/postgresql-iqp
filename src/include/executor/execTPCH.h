@@ -36,6 +36,8 @@ typedef struct TPCH_Update
     int     numUpdates;
     int     *table_oid; 
     double  *table_amp_factor;
+    bool    *delta_occur;
+    bool    *table_complete;
     char    **update_tables;
     char    **update_commands;
     char    **delete_commands;
@@ -59,5 +61,12 @@ extern TPCH_Update *DefaultTPCHUpdate(int numDelta);
 extern bool CheckTPCHDefaultUpdate(int oid);
 
 extern char * GetTableName(TPCH_Update *update, int oid);
+
+extern void ExtMarkDeltaOccur(TPCH_Update *update, int oid);
+
+extern bool ExtAllExternalDeltaOccur(TPCH_Update *update);
+
+extern int ExtCheckTPCHUpdate(TPCH_Update *update, int oid);
+
 #endif 
 

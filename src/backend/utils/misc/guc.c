@@ -834,6 +834,24 @@ static struct config_bool ConfigureNamesBool[] =
 
     /* totem: add enable_incremental option */
     {
+        {"external_delta", PGC_USERSET, QUERY_TUNING_METHOD,
+            gettext_noop("Use external delta or not"),
+            NULL
+        },
+        &external_delta,
+        false,
+        NULL, NULL, NULL
+    },
+    {
+        {"is_complete", PGC_USERSET, QUERY_TUNING_METHOD,
+            gettext_noop("Is the current table complete or not"),
+            NULL
+        },
+        &is_complete,
+        false,
+        NULL, NULL, NULL
+    },
+    {
         {"enable_incremental", PGC_USERSET, QUERY_TUNING_METHOD,
             gettext_noop("Enable incremental processing"),
             NULL

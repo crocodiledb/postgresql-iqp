@@ -23,10 +23,11 @@
 
 
 typedef struct shm_tq {
-    int tuple_num;
-    int head; 
-    int tail; 
-    char data[SHM_SIZE]
+    bool    complete;
+    int     tuple_num;
+    int     head; 
+    int     tail; 
+    char    data[SHM_SIZE]
 } shm_tq; 
 
 typedef struct IncTupQueueReader
@@ -55,6 +56,8 @@ extern void OpenIncTupQueueReader(IncTupQueueReader * tq_reader);
 
 extern int GetIncTupQueueSize(IncTupQueueReader *tq_reader); 
 
+extern bool GetIncTQComplete(IncTupQueueReader *tq_reader);
+
 extern IncTupQueueReader *GetIncTupQueueSnapShot(IncTupQueueReader *tq_reader, IncTupQueueReader *ss_reader); 
 
 extern HeapTuple ReadIncTupQueue(IncTupQueueReader *tq_reader, bool *done);
@@ -71,6 +74,8 @@ extern IncTupQueueWriter *CreateIncTupQueueWriter(Relation r, TupleDesc tupledes
 extern bool OpenIncTupQueueWriter(IncTupQueueWriter * tq_writer); 
 
 extern void WriteIncTupQueue(IncTupQueueWriter *tq_writer, HeapTuple tup); 
+
+extern void MarkCompleteIncTQWriter(IncTupQueueWriter * tq_writer);
 
 extern void CloseIncTupQueueWriter(IncTupQueueWriter * tq_writer); 
 

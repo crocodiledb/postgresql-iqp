@@ -21,9 +21,12 @@ extern bool enable_incremental;
 extern int  memory_budget;
 extern bool use_sym_hashjoin;
 extern bool use_material;
+extern bool external_delta;
+extern bool is_complete; 
 
 extern char *wrong_table_update;
 extern bool  useWrongPrediction;
+
 
 /*
  * We need to define several states used by TupleTableSlot

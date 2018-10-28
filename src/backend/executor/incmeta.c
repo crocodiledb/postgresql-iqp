@@ -63,6 +63,7 @@ bool gen_mem_info;
 bool enable_incremental;
 int  memory_budget;     /* kB units*/
 DecisionMethod decision_method;
+bool external_delta;
 
 bool use_material = true; 
 bool use_sym_hashjoin = true;
@@ -73,6 +74,8 @@ bool useBruteForce = false;
 
 char *wrong_table_update;
 bool  useWrongPrediction;
+
+bool is_complete;
 
 char *incTagName[INC_TAG_NUM] = {"HASHJOIN", "MERGEJOIN", "NESTLOOP", "AGGHASH", "AGGSORT", 
     "SORT", "MATERIAL", "SEQSCAN", "INDEXSCAN","INVALID"}; 
@@ -143,6 +146,8 @@ double GetTimeDiff(struct timeval x , struct timeval y);
 
 static void PrintOutAttNum(PlanState *ps); 
 
+static void ReAllocDeltaArray(EState *estate); 
+
 /* 
  * Interfaces for incremental query processing 
  */
@@ -198,7 +203,10 @@ ExecIncStart(EState *estate, PlanState *ps)
         /* Potential Updates of TPC-H */
         estate->tpch_update = ExecInitTPCHUpdate(tables_with_update, false);
         estate->wrong_tpch_update = ExecInitTPCHUpdate(wrong_table_update, true); 
-        estate->numDelta = estate->tpch_update->numdelta; 
+        if (!external_delta)
+            estate->numDelta = estate->tpch_update->numdelta;
+        else 
+            estate->numDelta = 2;
         estate->deltaIndex = 0; 
 
         if (delta_mode == TPCH_DEFAULT)
@@ -334,9 +342,19 @@ ExecIncRun(EState *estate, PlanState *planstate)
         ExecResetTQReader(estate); 
         ExecResetState(planstate); 
 
-        /* step 4. let's consider the delta after the next delta */
+        /* step 4. generate, wait, collect, and propagate update */
+        if (!external_delta)
+            ExecGenUpdate(estate, estate->deltaIndex - 1);
+        ExecWaitUpdate(estate); 
+        ExecCollectUpdate(estate); 
+        (void) ExecPropRealUpdate(estate->es_incInfo[estate->es_numIncInfo - 1]); 
+
+        /* step 5. let's consider the delta after the next delta */
         if (estate->deltaIndex < estate->numDelta)
         {
+            if (external_delta)
+                ReAllocDeltaArray(estate);
+
             struct timeval start, end;  
             gettimeofday(&start , NULL);
 
@@ -372,12 +390,6 @@ ExecIncRun(EState *estate, PlanState *planstate)
             gettimeofday(&end , NULL);
             estate->decisionTime += GetTimeDiff(start, end);  
         }
-
-        /* step 5. generate, wait, collect, and propagate update */
-        ExecGenUpdate(estate, estate->deltaIndex - 1);
-        ExecWaitUpdate(estate); 
-        ExecCollectUpdate(estate); 
-        (void) ExecPropRealUpdate(estate->es_incInfo[estate->es_numIncInfo - 1]); 
 
         /* step 6. generate pull actions */
         ExecGenPullAction(estate->es_incInfo[estate->es_numIncInfo - 1], PULL_DELTA); 
@@ -816,13 +828,13 @@ ExecEstimateUpdate(EState *estate, bool slave)
         }
         else
         {
-            if (use_default_tpch && know_dist_only)
+            if (!external_delta)
             {
                 update_rows = CheckTPCHUpdate(update, GEN_TQ_KEY(ss->ss_currentRelation), estate->deltaIndex);
             }
             else
             {
-                update_rows = CheckTPCHUpdate(update, GEN_TQ_KEY(ss->ss_currentRelation), estate->deltaIndex);
+                update_rows = ExtCheckTPCHUpdate(update, GEN_TQ_KEY(ss->ss_currentRelation));
             }
         }
 
@@ -998,7 +1010,9 @@ static void ExecGenUpdate(EState *estate, int deltaIndex)
 static void 
 ExecWaitUpdate(EState *estate)
 {
-    int deltasize = 0; 
+    int cur_deltasize  = 0; 
+    int prev_deltasize = 0;
+
     int threshold = DELTA_THRESHOLD; 
 
     IncTQPool *tq_pool = estate->tq_pool; 
@@ -1007,13 +1021,15 @@ ExecWaitUpdate(EState *estate)
     {
 		CHECK_FOR_INTERRUPTS();
         
-        deltasize = GetTQUpdate(tq_pool); 
+        cur_deltasize = GetTQUpdate(tq_pool); 
 
-        if (deltasize >= threshold) 
+        if (cur_deltasize >= threshold && cur_deltasize == prev_deltasize) 
         {
-            elog(NOTICE, "delta %d", deltasize); 
+            elog(NOTICE, "delta %d", cur_deltasize); 
             break;
         }
+
+        prev_deltasize = cur_deltasize;
 
        sleep(1); 
     }
@@ -1025,20 +1041,31 @@ static void ExecCollectUpdate(EState *estate)
 
     IncTQPool *tq_pool = estate->tq_pool; 
     ScanState **reader_ss_array = estate->reader_ss; 
-    bool hasUpdate; 
+    bool hasUpdate;
+    bool isComplete;
 
     for(int i = 0; i < estate->es_numLeaf; i++) 
     {
         r = reader_ss_array[i]->ss_currentRelation;  
         hasUpdate = HasTQUpdate(tq_pool, r);
+        isComplete = IsTQComplete(tq_pool, r);
+
         reader_ss_array[i]->ps.ps_IncInfo->leftUpdate = hasUpdate; 
 
         reader_ss_array[i]->tq_reader = GetTQReader(tq_pool, r, reader_ss_array[i]->tq_reader); 
 
-        if (hasUpdate)
+        if (hasUpdate && isComplete)
+        {
             fprintf(estate->es_stateFile, "%s\t", GetTableName(estate->tpch_update, GEN_TQ_KEY(r))); 
+            ExtMarkTableComplete(estate->tpch_update, GEN_TQ_KEY(r));
+        }
     }
     fprintf(estate->es_stateFile, "\n"); 
+
+    if (external_delta && ExtAllTableComplte(estate->tpch_update))
+    {
+        estate->numDelta = estate->deltaIndex;
+    }
 }
 
 
@@ -2347,4 +2374,20 @@ static void PrintOutAttNum(PlanState *ps)
     if (ps->righttree != NULL)
         PrintOutAttNum(ps->righttree); 
 }
+
+static void ReAllocDeltaArray(EState *estate)
+{
+    if ((estate->deltaIndex + 1) ==  estate->numDelta)
+    {
+        double *old_execTime = estate->execTime;
+        estate->execTime  = palloc(sizeof(double) * (estate->numDelta + 1) * 2 );
+        for (int i = 0; i <= estate->numDelta; i++)
+        {
+            estate->execTime[i] = old_execTime[i];
+        }
+        estate->numDelta = (estate->numDelta + 1) * 2;
+    }
+}
+
+
 

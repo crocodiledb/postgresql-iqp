@@ -302,7 +302,7 @@ ExecDBTWaitUpdate(EState *estate)
 
         prev_deltasize = cur_deltasize;
 
-       sleep(100); 
+       sleep(1); 
     }
 }
 

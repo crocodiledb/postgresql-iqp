@@ -74,7 +74,7 @@ ExecInitDBToaster(EState *estate, PlanState *root)
     if (!external_delta)
         estate->numDelta = estate->tpch_update->numdelta; 
     else
-        estate->numDelta = 2; 
+        estate->numDelta = 1; 
     estate->deltaIndex = 0; 
 
     // Build DBTConf and DBToaster
@@ -205,7 +205,8 @@ ExecDBToaster(EState *estate, PlanState *root)
             }
             else
             {
-                ReAllocDeltaArray(estate);
+                if (external_delta)
+                    ReAllocDeltaArray(estate);
 
                 estate->deltaIndex++;
 

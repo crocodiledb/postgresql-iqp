@@ -1204,6 +1204,9 @@ static void PropNeedMaintain(DBTMaterial *mat, bool hasUpdate, int base_index)
 
 static void SetMatNeedMaintain(DBTMaterial *mat)
 {
+    if (mat->hb == NULL)
+        return; 
+
     bool needMaintain = false;
     for(int i = 0; i < mat->hb->table_index; i++)
     {

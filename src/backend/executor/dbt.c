@@ -61,6 +61,8 @@ static void ShowMemSize(EState *estate);
 
 static void ReAllocDeltaArray(EState *estate); 
 
+static void PropUpdate(DBToaster *dbt);
+
 void 
 ExecInitDBToaster(EState *estate, PlanState *root)
 {
@@ -215,6 +217,7 @@ ExecDBToaster(EState *estate, PlanState *root)
                     GenTPCHUpdate(estate->tpch_update, estate->deltaIndex - 1); 
                 ExecDBTWaitUpdate(estate); 
                 ExecDBTCollectUpdate(estate); 
+                PropUpdate(dbt);
 
                 // Reset
                 ExecDBTResetMat(dbt, estate, root); 
@@ -243,6 +246,9 @@ ExecDBTProcNode(DBTMaterial *mat, TupleTableSlot * slot, int base_index)
     PlanState *additional_ps = mat->additional_ps; 
 
     local_ps[base_index]->ps_WorkingTupleSlot = slot; 
+
+    if (!mat->needMaintain)
+        return;
 
     for (;;)
     {
@@ -913,6 +919,7 @@ ExecBuildDBToaster(DBTConf * dbtConf, PlanState *root)
 
         dbtMat->numHash = 0; 
         dbtMat->hasUpdate = true;
+        dbtMat->needMaintain = true;
 
         dbt->mat_array[i] = dbtMat; 
         if (i + base_num >= mat_num)
@@ -1168,3 +1175,57 @@ static void ReAllocDeltaArray(EState *estate)
         estate->numDelta = (estate->numDelta + 1) * 2;
     }
 }
+
+static void SetNeedMaintain(HashJoinState *hjState, bool hasUpdate)
+{
+    if (hjState->hj_hasInnerHash)
+        hjState->hj_HashTable->needMaintain = hasUpdate;
+    else
+        hjState->hj_OuterHashTable->needMaintain = hasUpdate;
+}
+
+static void PropNeedMaintain(DBTMaterial *mat, bool hasUpdate, int base_index)
+{
+    PlanState **local_ps = mat->local_ps; 
+    PlanState *additional_ps = mat->additional_ps;
+
+    SetNeedMaintain((HashJoinState *)local_ps[base_index], hasUpdate);
+
+    if (additional_ps == NULL)
+    {
+        for (int j = 0; j < mat->parent_num[base_index]; j++)
+            PropNeedMaintain(mat->parents[base_index][j], hasUpdate, base_index); 
+    }
+    else
+    {
+        return;
+    }
+}
+
+static void SetMatNeedMaintain(DBTMaterial *mat)
+{
+    bool needMaintain = false;
+    for(int i = 0; i < mat->hb->table_index; i++)
+    {
+        if (mat->hb->table_array[i]->needMaintain)
+        {
+            needMaintain = true;
+            break;
+        }
+    }
+    mat->needMaintain = needMaintain;
+}
+
+static void PropUpdate(DBToaster *dbt)
+{
+   for (int i = 0; i < dbt->base_num; i++) 
+   {
+       DBTMaterial * mat = dbt->base_array[i];
+       for (int j = 0; j < mat->parent_num[i]; j++)
+           PropNeedMaintain(mat->parents[i][j], mat->hasUpdate, i);
+   }
+
+   for (int i = 0; i < dbt->mat_num; i++)
+       SetMatNeedMaintain(dbt->mat_array[i]);
+}
+

@@ -74,6 +74,10 @@ void HashBundleInsert(HashBundle *hb, TupleTableSlot *slot)
     for (int i = 0; i < hb->table_index; i++)
     {
         hashtable = hb->table_array[i]; 
+
+        if (!hashtable->needMaintain)
+            continue;
+
         econtext = hb->econtext_array[i]; 
         hashkeys = hb->hashkeys_array[i]; 
         outer_tuple = hb->outer_tuple_array[i];

@@ -156,6 +156,8 @@ typedef struct HashJoinTableData
 	double		totalTuples;	/* # tuples obtained from inner plan */
 	double		skewTuples;		/* # tuples inserted into skew tuples */
 
+    bool        needMaintain;
+
 	/*
 	 * These arrays are allocated for the life of the hash join, but only if
 	 * nbatch > 1.  A file is opened only when we first write a tuple into it

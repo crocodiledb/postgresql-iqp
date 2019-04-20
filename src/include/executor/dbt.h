@@ -61,7 +61,8 @@ typedef struct DBTMaterial
     PlanState           *additional_ps; 
     struct DBTMaterial  ***parents;
     int                 *parent_num; 
-    bool                hasUpdate; 
+    bool                hasUpdate;
+    bool                needMaintain; 
 } DBTMaterial; 
 
 typedef struct DBTStat
